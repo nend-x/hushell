@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell-volume</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body data-page="volfly">
+  <div id="card" class="volfly-card">
+    <div class="vf-head">
+      <span class="vf-cap">Master</span>
+      <span id="pct" class="vf-pct">--</span>
+    </div>
+    <input id="slider" class="vol-slider vf-main" type="range" min="0" max="100" value="0"
+           aria-label="Master volume" />
+    <div class="vf-ruler"></div>
+    <div class="vf-foot">
+      <button id="mute" class="vol-btn">Mute</button>
+      <span class="vf-flex"></span>
+    </div>
+  </div>
+  <script src="theme.js"></script>
+  <script src="volfly.js"></script>
+</body>
+</html>

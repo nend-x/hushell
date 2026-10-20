@@ -1,0 +1,634 @@
+/* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/Geist-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ============================================================
+   hushell — quiet white shell UI
+   ============================================================ */
+
+:root {
+  --bg: rgba(243, 241, 235, 0.86);
+  --bg-card: rgba(246, 244, 238, 0.97);
+  --stroke: rgba(20, 20, 20, 0.08);
+  --stroke-soft: rgba(20, 20, 20, 0.05);
+  --ink: #171717;
+  --ink-2: #8f8f8c;
+  --hover: rgba(20, 20, 20, 0.045);
+  --active: rgba(20, 20, 20, 0.085);
+  --shadow-card: 0 18px 50px rgba(0, 0, 0, 0.18), 0 2px 8px rgba(0, 0, 0, 0.08);
+  --dot: rgba(20, 20, 20, 0.25);
+  --dot-active: #171717;
+  --thumb-slot: #e9e7e1;
+  --err: #b3261e;
+  --err-soft: rgba(179, 38, 30, 0.07);
+  --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
+  --ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --fast: 160ms;
+  --med: 240ms;
+}
+
+:root[data-theme="dark"] {
+  --bg: rgba(24, 24, 27, 0.84);
+  --bg-card: rgba(29, 29, 33, 0.97);
+  --stroke: rgba(236, 234, 222, 0.14);
+  --stroke-soft: rgba(236, 234, 222, 0.08);
+  --ink: #eceade;
+  --ink-2: #8f8f8c;
+  --hover: rgba(236, 234, 222, 0.07);
+  --active: rgba(236, 234, 222, 0.12);
+  --shadow-card: 0 18px 50px rgba(0, 0, 0, 0.55), 0 2px 8px rgba(0, 0, 0, 0.4);
+  --dot: rgba(236, 234, 222, 0.3);
+  --dot-active: #eceade;
+  --thumb-slot: #1c1c1f;
+  --err: #ff6f61;
+  --err-soft: rgba(255, 111, 97, 0.1);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Geist", "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+  user-select: none;
+  -webkit-user-select: none;
+  cursor: default;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+/* ============================================================
+   BAR (index.html)
+   ============================================================ */
+
+[data-page="bar"] { display: block; }
+
+#bar {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  border-top: 1px solid var(--stroke-soft);
+  transform: translateY(102%);
+  transition: transform 520ms var(--ease);
+}
+
+#bar.in { transform: translateY(0); }
+
+.bar-inner {
+  height: 100%;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 8px 0 6px;
+}
+
+.tasks {
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: min(62%, 720px);
+  overflow: hidden;
+}
+
+.task {
+  position: relative;
+  width: 44px;
+  height: 36px;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  transition: none;
+}
+.task:hover { background: var(--hover); }
+.task:active { background: var(--active); }
+
+.task-icon {
+  width: 22px;
+  height: 22px;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.8))
+    drop-shadow(0 0 1px rgba(0, 0, 0, 0.4));
+}
+/* running indicator dot */
+.task-dot {
+  position: absolute;
+  bottom: 3px;
+  left: 50%;
+  height: 3px;
+  width: 6px;
+  border-radius: 0;
+  background: var(--dot);
+  transform: translateX(-50%);
+  transition: none;
+  pointer-events: none;
+}
+.task.is-min .task-dot { height: 2px; }
+.task:hover .task-dot { width: 12px; }
+
+.task.is-active .task-dot {
+  width: 15px;
+  height: 3px;
+  border-radius: 0;
+  background: var(--dot-active);
+  animation: dot-spring 300ms var(--spring);
+}
+
+@keyframes dot-spring {
+  0% { width: 4px; opacity: 0.2; }
+  100% { width: 15px; opacity: 1; }
+}
+
+.task.pop { animation: task-pop 320ms var(--spring); }
+
+@keyframes task-pop {
+  0% { transform: translateY(10px) scale(0.7); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+@keyframes fade-in {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+.fill { flex: 1 1 auto; height: 100%; }
+
+.lang {
+  display: flex;
+  align-items: center;
+  height: 36px;
+  padding: 0 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1.2px;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+  animation: fade-in 400ms var(--ease) 200ms backwards;
+}
+.lang:hover { background: var(--hover); }
+.lang span { line-height: 1; }
+
+.clock {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  justify-content: center;
+  gap: 1px;
+  padding: 0 10px;
+  height: 36px;
+  border-radius: 0;
+  animation: fade-in 400ms var(--ease) 200ms backwards;
+}
+.clock:hover { background: var(--hover); }
+.time {
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  font-variant-numeric: tabular-nums;
+  line-height: 1.1;
+}
+.date {
+  font-size: 10px;
+  color: var(--ink-2);
+  line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+}
+
+.tray-btn {
+  width: 36px;
+  height: 36px;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  color: var(--ink);
+  animation: fade-in 400ms var(--ease) 200ms backwards;
+}
+.tray-btn:hover { background: var(--hover); }
+.tray-btn:active { background: var(--active); }
+.tray-btn svg { transform: rotate(0deg); }
+/* arrow flips from pointing-up to pointing-down while the flyout is open */
+.tray-btn.open svg { transform: rotate(180deg); }
+
+/* ============================================================
+   TRAY OVERFLOW FLYOUT (trayfly.html) — Windows 11 hidden-icons
+   style popup, hushell white-glass theme. Geometry MUST stay in
+   sync with TRAYFLY_* constants in src-tauri/src/thumbs.rs:
+   width 198 = 2*12 pad + 3*54 cells + 2*6 gaps; height per row
+   count 78/138/198.
+   ============================================================ */
+
+[data-page="trayfly"] { display: block; }
+
+.trayfly-card {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-card);
+  border-radius: 0;
+  display: flex;
+  align-items: flex-end;
+  opacity: 1;
+  overflow: hidden;
+  transition: none;
+}
+.trayfly-card.pre {
+  transition: none;
+}
+.trayfly-card.out {
+  transition: none;
+}
+
+.tray-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 54px);
+  gap: 6px;
+  padding: 12px;
+  max-height: 318px;
+  overflow-y: auto;
+  scrollbar-width: none;
+}
+.tray-grid::-webkit-scrollbar { display: none; }
+
+.tray-cell {
+  width: 54px;
+  height: 54px;
+  border-radius: 0;
+  display: grid;
+  place-items: center;
+  animation: fade-in 240ms var(--ease) backwards;
+  transition: none;
+}
+.tray-cell:hover { background: var(--hover); }
+.tray-cell:active { background: var(--active); }
+.tray-cell img {
+  width: 24px;
+  height: 24px;
+  pointer-events: none;
+  -webkit-user-drag: none;
+  filter: drop-shadow(0 0 1px rgba(0, 0, 0, 0.8))
+    drop-shadow(0 0 1px rgba(0, 0, 0, 0.4));
+}
+
+.tray-fallback {
+  max-width: 46px;
+  max-height: 30px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  word-break: break-word;
+  font-size: 9.5px;
+  line-height: 1.2;
+  letter-spacing: 0.2px;
+  color: var(--ink);
+  text-align: center;
+  pointer-events: none;
+}
+
+.trayfly-empty {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  font-size: 11.5px;
+  color: var(--ink-2);
+  letter-spacing: 0.3px;
+}
+
+.preview-card {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-card);
+  border: 1px solid var(--stroke);
+  border-radius: 0;
+  overflow: hidden;
+}
+
+#preview-grid {
+  position: absolute;
+  inset: 0;
+}
+
+.slot {
+  position: absolute;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--stroke-soft);
+  background: var(--thumb-slot);
+  overflow: hidden;
+}
+.slot.hot { border-color: var(--ink-2); }
+
+.slot-label {
+  height: 16px;
+  line-height: 16px;
+  padding: 0 6px;
+  font-size: 10.5px;
+  color: var(--ink);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.slot-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.slot-min {
+  flex: 0 0 auto;
+  font-size: 8.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  pointer-events: none;
+}
+
+/* the live DWM thumbnail composites natively on top of this area */
+.slot-thumb {
+  position: relative;
+  flex: 1 1 auto;
+  background: transparent;
+}
+
+.slot-badge {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  cursor: default;
+  background: var(--thumb-slot);
+}
+.badge-num {
+  font-size: 34px;
+  font-weight: 300;
+  color: var(--ink);
+  line-height: 1.05;
+  letter-spacing: -0.5px;
+}
+.badge-label {
+  font-size: 10px;
+  letter-spacing: 1.2px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin-top: 4px;
+}
+
+/* ============================================================
+   WINGROUP LIST (wingroup.html) — the "+(nr) windows" badge's
+   destination window. Custom titlebar (icon + process name + close,
+   draggable) + custom scrollbar list of every window of the process.
+   The window is 340x420 CSS (native side positions + shows it).
+   ============================================================ */
+.wingroup-card {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--bg-card);
+  border: 1px solid var(--stroke);
+  overflow: hidden;
+}
+.wg-titlebar {
+  flex: 0 0 auto;
+  height: 38px;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 0 8px 0 12px;
+  border-bottom: 1px solid var(--stroke-soft);
+  user-select: none;
+}
+.wg-titlebar.drag {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  height: 100%;
+}
+.wg-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  object-fit: contain;
+  display: none;
+}
+.wg-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wg-close {
+  flex: 0 0 auto;
+  width: 26px;
+  height: 26px;
+  border: 0;
+  border-radius: 0;
+  background: none;
+  color: var(--ink-2);
+  display: grid;
+  place-items: center;
+  cursor: default;
+}
+.wg-close:hover { background: var(--hover); color: var(--ink); }
+.wg-close:active { background: var(--active); }
+
+.wg-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 8px 0;
+}
+.wg-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 12px;
+  cursor: default;
+}
+.wg-row:hover { background: var(--hover); }
+.wg-row:active { background: var(--active); }
+.wg-row-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wg-row-min {
+  flex: 0 0 auto;
+  font-size: 8.5px;
+  letter-spacing: 0.4px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.wg-empty {
+  padding: 18px 14px;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+
+.wg-list::-webkit-scrollbar {
+  width: 8px;
+}
+.wg-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.wg-list::-webkit-scrollbar-thumb {
+  background: var(--stroke);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+.wg-list::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-2);
+  border: 2px solid transparent;
+  background-clip: padding-box;
+}
+
+[data-page="volfly"] {
+  display: block;
+  --track: var(--stroke);
+}
+
+[data-page="volfly"] .vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  margin: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.volfly-card {
+  position: absolute;
+  inset: 0;
+  background: var(--bg-card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  padding-bottom: 8px;
+  opacity: 1;
+}
+
+.vf-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 14px 16px 8px;
+}
+.vf-cap {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  line-height: 1;
+  padding-bottom: 6px;
+}
+.vf-pct {
+  font-size: 30px;
+  font-weight: 300;
+  letter-spacing: -0.5px;
+  color: var(--ink);
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* master slider — a taller touch strip than the widget's */
+.vol-slider.vf-main {
+  flex: 0 0 auto;
+  height: 22px;
+  margin: 2px 16px 0;
+  width: calc(100% - 32px);
+}
+.vol-slider.vf-main::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--track);
+  border-radius: 0;
+}
+.vol-slider.vf-main::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 14px;
+  height: 14px;
+  margin-top: -5.5px;
+  background: var(--ink);
+  border: 0;
+  border-radius: 0;
+}
+.vol-slider.vf-main:hover::-webkit-slider-thumb {
+  background: var(--bg-card);
+  outline: 1px solid var(--ink);
+}
+
+.vf-ruler {
+  flex: 0 0 auto;
+  height: 5px;
+  margin: 2px 17px 0;
+  background: repeating-linear-gradient(
+    to right,
+    var(--track) 0,
+    var(--track) 1px,
+    transparent 1px,
+    transparent 10%
+  );
+  border-right: 1px solid var(--track);
+}
+
+.vf-foot {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 10px 16px 12px;
+}
+.vf-flex { flex: 1 1 auto; }
+.vol-btn {
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font: 600 9.5px/1 "Geist", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  cursor: pointer;
+}
+.vol-btn:hover { background: var(--ink); color: var(--bg-card); }
+.vol-btn.is-muted { background: var(--ink); color: var(--bg-card); }
+
+html.theming,
+html.theming *,
+html.theming *::before,
+html.theming *::after {
+  transition: background-color 480ms ease, color 480ms ease,
+    border-color 480ms ease, fill 480ms ease, stroke 480ms ease,
+    box-shadow 480ms ease !important;
+}

@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body data-page="bar">
+  <div id="bar" aria-label="hushell taskbar">
+    <div class="bar-inner">
+      <div id="tasks" class="tasks"></div>
+
+      <div class="fill"></div>
+
+      <div id="lang" class="lang" style="display:none">
+        <span id="lang-code"></span>
+      </div>
+
+      <button id="volBtn" class="tray-btn" aria-label="Master volume">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M11 5 L6.5 9 H3.5 v6 h3 L11 19 z"></path>
+          <path d="M15.5 8.5 a5 5 0 0 1 0 7"></path>
+          <path d="M18.5 6 a9 9 0 0 1 0 12"></path>
+        </svg>
+      </button>
+
+      <button id="trayBtn" class="tray-btn" aria-label="Hidden tray icons">
+        <svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"
+             stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5.5 14.5 L12 8 L18.5 14.5"></path>
+        </svg>
+      </button>
+
+      <div id="clock" class="clock">
+        <div id="time" class="time">--:--</div>
+        <div id="date" class="date"></div>
+      </div>
+    </div>
+  </div>
+  <script src="theme.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

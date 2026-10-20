@@ -1,0 +1,43 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "hushell",
+  "version": "1.0.0",
+  "identifier": "app.hushell",
+  "build": {
+    "frontendDist": "../ui"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "taskbar",
+        "title": "hushell",
+        "width": 1280,
+        "height": 52,
+        "x": 0,
+        "y": 0,
+        "decorations": false,
+        "transparent": true,
+        "shadow": false,
+        "alwaysOnTop": true,
+        "skipTaskbar": true,
+        "resizable": false,
+        "focus": false,
+        "visible": false,
+        "windowEffects": {
+          "effects": [
+            "acrylic",
+            "mica",
+            "blur"
+          ]
+        }
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": false
+  }
+}

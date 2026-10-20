@@ -1,0 +1,80 @@
+/* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/Geist-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --paper: #f1efe8;
+  --ink: #111;
+  --sep: rgba(0, 0, 0, 0.35);
+  --shadow-hard: 3px 3px 0 rgba(0, 0, 0, 0.18);
+}
+:root[data-theme="dark"] {
+  --paper: #1b1b1f;
+  --ink: #eceade;
+  --sep: rgba(236, 234, 222, 0.3);
+  --shadow-hard: 3px 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+}
+
+/* The window is 260x170 CSS px, centered on screen by the native side;
+   the sheet centers itself inside it so the SHEET lands on screen center.
+   The transparent margin is a click-away zone (menu.js closes on it). */
+#menu {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  min-width: 168px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-hard);
+  padding: 4px 0;
+}
+#menu.hidden {
+  display: none;
+}
+#menu .mi {
+  padding: 6px 18px 6px 14px;
+  font-size: 12.5px;
+  color: var(--ink);
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+  white-space: nowrap;
+}
+#menu .mi:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+#menu .sep {
+  height: 1px;
+  background: var(--sep);
+  margin: 4px 8px;
+}
+
+/* The theme-switch animation gate (ui/theme.js adds html.theming for
+   ~700ms during a live switch): colors glide. Outside a switch nothing
+   transitions — the instant invert hover is part of the contract. */
+html.theming,
+html.theming *,
+html.theming *::before,
+html.theming *::after {
+  transition: background-color 480ms ease, color 480ms ease,
+    border-color 480ms ease, fill 480ms ease, stroke 480ms ease,
+    box-shadow 480ms ease !important;
+}

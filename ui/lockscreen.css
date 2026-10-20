@@ -1,0 +1,171 @@
+/* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/Geist-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --paper: #f1efe8;
+  --ink: #111;
+  --ink-2: rgba(0, 0, 0, 0.45);
+  --stroke: rgba(0, 0, 0, 0.35);
+  --stroke-soft: rgba(0, 0, 0, 0.14);
+  --field: #f8f6f0;
+  --err: #b3261e;
+}
+:root[data-theme="dark"] {
+  --paper: #1b1b1f;
+  --ink: #eceade;
+  --ink-2: rgba(236, 234, 222, 0.5);
+  --stroke: rgba(236, 234, 222, 0.35);
+  --stroke-soft: rgba(236, 234, 222, 0.14);
+  --field: #232328;
+  --err: #ff6f61;
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+/* the page itself is never animated by the shell's theme gate — the lock
+   must be legible at every instant (no 700 ms color glide on a lock) */
+html.theming #lock > * {
+  transition: none !important;
+}
+
+#lock {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+}
+
+/* ---------- drawn padlock (the shell's glyph language) ---------- */
+
+#lock-glyph {
+  position: relative;
+  width: 34px;
+  height: 44px;
+  margin-bottom: 34px;
+}
+#lock-glyph .shackle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 22px;
+  height: 18px;
+  border: 2.5px solid var(--ink);
+  border-bottom: none;
+  border-radius: 11px 11px 0 0;
+}
+#lock-glyph .body {
+  position: absolute;
+  top: 16px;
+  left: 0;
+  width: 34px;
+  height: 26px;
+  background: var(--ink);
+}
+#lock-glyph .keyhole {
+  position: absolute;
+  top: 25px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 6px;
+  height: 10px;
+  background: var(--paper);
+}
+
+/* ---------- clock + date ---------- */
+
+#clock {
+  font-size: 76px;
+  font-weight: 200;
+  letter-spacing: 2px;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+#date {
+  margin-top: 10px;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* ---------- password line ---------- */
+
+#unlock-form {
+  margin-top: 56px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+}
+#password {
+  width: 240px;
+  padding: 8px 2px;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  outline: none;
+  text-align: center;
+  font: 15px/1.4 "Geist", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 3px;
+  color: var(--ink);
+  caret-color: var(--ink);
+}
+#password::placeholder {
+  color: var(--ink-2);
+  letter-spacing: 1px;
+}
+#password:focus {
+  border-bottom-color: var(--ink);
+}
+#password.bad {
+  border-bottom-color: var(--err);
+}
+
+#unlock-form.shake {
+  animation: lock-shake 260ms linear;
+}
+@keyframes lock-shake {
+  0% { transform: translateX(0); }
+  20% { transform: translateX(-7px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(3px); }
+  100% { transform: translateX(0); }
+}
+
+/* ---------- brand footer ---------- */
+
+#lock-brand {
+  position: absolute;
+  bottom: 22px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 3px;
+  color: var(--ink-2);
+}

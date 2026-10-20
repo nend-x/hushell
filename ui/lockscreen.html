@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell-lockscreen</title>
+  <link rel="stylesheet" href="lockscreen.css" />
+  <script>
+    /* load/error diagnostics: page load and script errors reach the
+       backend log. */
+    window.onerror = function (m, s, l, c) {
+      try {
+        var t = window.__TAURI__;
+        if (t && t.core && t.core.invoke) {
+          t.core.invoke("startmenu_ui_error", { msg: "lockscreen: " + String(m) + " @" + (l || 0) + ":" + (c || 0) });
+        }
+      } catch (e) { /* nothing */ }
+      return false;
+    };
+    window.addEventListener("load", function () {
+      try {
+        var t = window.__TAURI__;
+        if (t && t.core && t.core.invoke) t.core.invoke("startmenu_ui_loaded");
+      } catch (e) { /* nothing */ }
+    });
+  </script>
+</head>
+<body>
+  <div id="lock">
+    <div id="lock-glyph" aria-hidden="true"><i class="shackle"></i><i class="body"></i><i class="keyhole"></i></div>
+
+    <div id="clock" aria-live="off">--:--</div>
+    <div id="date">&nbsp;</div>
+
+    <form id="unlock-form" autocomplete="off">
+      <input id="password" type="password" placeholder="password" spellcheck="false" autocomplete="off" />
+    </form>
+
+    <footer id="lock-brand">hushell</footer>
+  </div>
+  <script src="theme.js"></script>
+  <script src="lockscreen.js"></script>
+</body>
+</html>

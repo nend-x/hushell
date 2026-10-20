@@ -1,0 +1,19 @@
+{
+  "identifier": "default",
+  "description": "All hushell windows: taskbar, hover preview card, live-wallpaper desktop, name dialog, task context menu, tray flyout, volume drop-up, start menu, lockscreen, wingroup list. Every window label must be listed here \u2014 tauri gates event listen() and window ops behind this list, and a missing label silently loses every listener.",
+  "windows": [
+    "taskbar",
+    "preview",
+    "hushtop",
+    "prompt",
+    "menu",
+    "trayfly",
+    "volfly",
+    "startmenu",
+    "lockscreen",
+    "wingroup"
+  ],
+  "permissions": [
+    "core:default"
+  ]
+}

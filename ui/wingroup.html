@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell wingroup</title>
+  <link rel="stylesheet" href="app.css" />
+</head>
+<body data-page="wingroup">
+  <div id="wingroup-card" class="wingroup-card">
+    <div class="wg-titlebar">
+      <div class="wg-titlebar drag" data-tauri-drag-region>
+        <img id="wg-icon" class="wg-icon" alt="" />
+        <span id="wg-name" class="wg-name" data-tauri-drag-region></span>
+      </div>
+      <button id="wg-close" class="wg-close" aria-label="Close list">
+        <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor"
+             stroke-width="1.8" stroke-linecap="round">
+          <path d="M6 6l12 12M18 6L6 18"></path>
+        </svg>
+      </button>
+    </div>
+    <div id="wg-list" class="wg-list"></div>
+  </div>
+  <script src="theme.js"></script>
+  <script src="wingroup.js"></script>
+</body>
+</html>

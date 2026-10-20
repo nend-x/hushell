@@ -1,0 +1,193 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell-prompt</title>
+  <style>
+  /* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
+  @font-face {
+    font-family: "Geist";
+    src: url("fonts/Geist-latin.woff2") format("woff2");
+    font-weight: 100 900;
+    font-style: normal;
+    font-display: swap;
+  }
+
+    /* themed titlebar instead of Windows chrome; content reflows to fit
+       the DPI-correct 372x214 window. */
+    html,
+    body {
+      margin: 0;
+      height: 100%;
+      background: transparent;
+      overflow: hidden;
+      font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+    }
+    /* theme variables (light + dark), shared with every other window. */
+    :root {
+      --paper: #f1efe8;
+      --ink: #111;
+      --ink-2: #999;
+      --field: #f8f6f0;
+      --err: #b00020;
+      --shadow-card: 4px 4px 0 rgba(0, 0, 0, 0.2);
+    }
+    :root[data-theme="dark"] {
+      --paper: #1e1e21;
+      --ink: #eceade;
+      --ink-2: #8f8f8c;
+      --field: #232327;
+      --err: #ff6f61;
+      --shadow-card: 4px 4px 0 rgba(0, 0, 0, 0.5);
+    }
+    #card {
+      position: absolute;
+      inset: 8px;
+      background: var(--paper);
+      border: 1px solid var(--ink);
+      box-shadow: var(--shadow-card);
+      display: flex;
+      flex-direction: column;
+    }
+    #pt-head {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      height: 28px;
+      flex: 0 0 auto;
+      padding: 0 4px 0 10px;
+      background: var(--ink);
+      color: var(--paper);
+      font-size: 10.5px;
+      font-weight: 600;
+      letter-spacing: 1.6px;
+      text-transform: uppercase;
+      cursor: default;
+      user-select: none;
+    }
+    #pt-head span {
+      flex: 1;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    #pt-close {
+      width: 22px;
+      height: 22px;
+      display: grid;
+      place-items: center;
+      background: none;
+      border: 0;
+      color: var(--paper);
+      cursor: pointer;
+      padding: 0;
+      font: 13px/1 "Geist", "Segoe UI", system-ui, sans-serif;
+    }
+    #pt-close:hover {
+      background: var(--paper);
+      color: var(--ink);
+    }
+    #pt-body {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      gap: 9px;
+      padding: 12px 14px;
+      min-height: 0;
+    }
+    #pt-row {
+      display: flex;
+      gap: 6px;
+    }
+    input {
+      flex: 1;
+      min-width: 0;
+      font: 13px "Geist", "Segoe UI", system-ui, sans-serif;
+      color: var(--ink);
+      background: var(--field);
+      border: 1px solid var(--ink-2);
+      border-radius: 0;
+      padding: 7px 9px;
+      outline: none;
+    }
+    input:focus {
+      border-color: var(--ink);
+    }
+    #pt-ext {
+      flex: 0 0 72px;
+    }
+    #pt-ext.hidden {
+      display: none;
+    }
+    #pt-err {
+      min-height: 15px;
+      font-size: 11.5px;
+      color: var(--err);
+    }
+    #pt-msg {
+      font-size: 12.5px;
+      line-height: 1.5;
+      color: var(--ink);
+    }
+    #pt-msg.hidden,
+    #pt-row.hidden {
+      display: none;
+    }
+    #pt-btns {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+    }
+    button.pt-btn {
+      font: 12.5px "Geist", "Segoe UI", system-ui, sans-serif;
+      padding: 6px 16px;
+      background: var(--paper);
+      color: var(--ink);
+      border: 1px solid var(--ink);
+      border-radius: 0;
+      cursor: pointer;
+    }
+    button.pt-btn:hover {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    button.pt-btn#pt-ok {
+      background: var(--ink);
+      color: var(--paper);
+    }
+    button.pt-btn#pt-ok:hover {
+      background: var(--paper);
+      color: var(--ink);
+    }
+    /* colors glide only during a live theme switch (html.theming). */
+    html.theming,
+    html.theming * {
+      transition: background-color 480ms ease, color 480ms ease,
+        border-color 480ms ease, box-shadow 480ms ease !important;
+    }
+  </style>
+</head>
+<body>
+  <div id="card">
+    <div id="pt-head">
+      <span id="pt-title">Rename</span>
+      <button id="pt-close" aria-label="Close">&#215;</button>
+    </div>
+    <div id="pt-body">
+      <div id="pt-msg" class="hidden">This wipes the config — widgets, notes, clipboard history, the lock password, every setting — and relaunches the shell from a clean sheet.</div>
+      <div id="pt-row">
+        <input id="pt-main" spellcheck="false" autocomplete="off" />
+        <input id="pt-ext" spellcheck="false" autocomplete="off" placeholder="ext" />
+      </div>
+      <div id="pt-err"></div>
+      <div id="pt-btns">
+        <button id="pt-cancel" class="pt-btn">Cancel</button>
+        <button id="pt-ok" class="pt-btn">OK</button>
+      </div>
+    </div>
+  </div>
+  <script src="theme.js"></script>
+  <script src="prompt.js"></script>
+</body>
+</html>

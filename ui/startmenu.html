@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>hushell-startmenu</title>
+  <link rel="stylesheet" href="startmenu.css" />
+  <script>
+    /* load/error diagnostics: page load and script errors reach the
+       backend log. */
+    window.onerror = function (m, s, l, c) {
+      try {
+        var t = window.__TAURI__;
+        if (t && t.core && t.core.invoke) {
+          t.core.invoke("startmenu_ui_error", { msg: String(m) + " @" + (l || 0) + ":" + (c || 0) });
+        }
+      } catch (e) { /* bridge missing — nothing to report to */ }
+      return false;
+    };
+    window.addEventListener("load", function () {
+      try {
+        var t = window.__TAURI__;
+        if (t && t.core && t.core.invoke) t.core.invoke("startmenu_ui_loaded");
+      } catch (e) { /* nothing */ }
+    });
+  </script>
+</head>
+<body>
+  <div id="sheet">
+    <aside id="rail">
+      <span id="rail-brand">hushell</span>
+      <span id="rail-sub">start</span>
+    </aside>
+
+    <main id="stage">
+      <!-- landing: three boxes -->
+      <section id="view-landing" class="view active">
+        <div class="boxes">
+          <button class="box" id="box-search">
+            <span class="glyph glyph-search"><i></i><i></i></span>
+            <span class="box-name">Search</span>
+            <span class="box-sub">apps &middot; files</span>
+          </button>
+          <button class="box" id="box-controls">
+            <span class="glyph glyph-controls"><i></i><i></i><i></i></span>
+            <span class="box-name">Controls</span>
+            <span class="box-sub">widgets &middot; shell</span>
+          </button>
+          <button class="box" id="box-pinned">
+            <span class="glyph glyph-pinned"><i></i><i></i><i></i></span>
+            <span class="box-name">Soon</span>
+            <span class="box-sub"></span>
+          </button>
+        </div>
+        <footer id="landing-foot">
+          <button id="power-btn" aria-label="Power menu">
+            <svg class="icon-power" viewBox="0 0 24 24" width="22" height="22"
+                 fill="none" stroke="currentColor" stroke-width="2"
+                 stroke-linecap="round" aria-hidden="true">
+              <path d="M12 2v10" />
+              <path d="M18.36 6.64a9 9 0 1 1-12.72 0" />
+            </svg>
+          </button>
+        </footer>
+      </section>
+
+      <!-- search -->
+      <section id="view-search" class="view">
+        <div id="search-bar">
+          <button class="back" id="search-back" aria-label="Back"><i></i><i></i></button>
+          <input id="search-input" type="text" placeholder="search apps, files&#8230;" spellcheck="false" autocomplete="off" />
+        </div>
+        <div id="results"></div>
+        <div id="search-hint" class="hidden">nothing found</div>
+      </section>
+
+      <!-- controls -->
+      <section id="view-controls" class="view">
+        <div class="view-bar">
+          <button class="back" id="controls-back" aria-label="Back"><i></i><i></i></button>
+          <span class="view-title">Controls</span>
+        </div>
+        <div id="controls-scroll">
+          <div class="group-title">add a widget</div>
+          <div class="wgrid">
+            <button class="wbtn" data-kind="notes">Notes</button>
+            <button class="wbtn" data-kind="volume">Volume</button>
+            <button class="wbtn" data-kind="clipboard">Clipboard</button>
+            <button class="wbtn" data-kind="stats">System stats</button>
+            <button class="wbtn" data-kind="lock">Lock</button>
+            <button class="wbtn" data-kind="media">Media</button>
+          </div>
+          <div class="sep"></div>
+          <div class="row row-input">
+            <span class="row-label">Lock password</span>
+            <span class="row-note" id="lockpw-state">not set</span>
+            <input id="lockpw-input" type="password" placeholder="new password" spellcheck="false" autocomplete="off" />
+            <button class="row-go" id="lockpw-set" aria-label="Save lock password"><i></i><i></i></button>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <span class="row-label">Lock hotkey</span>
+            <span class="row-note" id="lockhotkey-state">alt + l</span>
+            <button class="switch" id="sw-lockhotkey" aria-label="Toggle the alt+l lock hotkey"><i></i></button>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <span class="row-label">Run at startup</span>
+            <span class="row-note" id="startup-state">off</span>
+            <button class="switch" id="sw-startup" aria-label="Toggle launching hushell at logon"><i></i></button>
+          </div>
+          <div class="sep"></div>
+          <button class="row danger" id="row-fresh">
+            <span class="row-label">Start fresh</span>
+            <span class="row-note" id="fresh-note">wipe config &middot; relaunch</span>
+          </button>
+          <div class="sep"></div>
+          <button class="row danger" id="row-shutdown">
+            <span class="row-label">Shut down shell</span>
+            <span class="row-note">restore the stock taskbar</span>
+          </button>
+        </div>
+      </section>
+
+      <section id="view-pinned" class="view">
+        <div class="view-bar">
+          <button class="back" id="pinned-back" aria-label="Back"><i></i><i></i></button>
+          <span class="view-title">Soon</span>
+        </div>
+        <div id="pinned-scroll">
+          <div class="apps-ph">
+            <div class="ap-mark"></div>
+            <div class="ap-title">landing soon</div>
+            <div class="ap-note">something new is coming to this spot</div>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- in-page paper menu (open / pin / unpin on tiles) -->
+    <div id="menu" class="hidden"></div>
+  </div>
+  <script src="theme.js"></script>
+  <script src="startmenu.js"></script>
+</body>
+</html>

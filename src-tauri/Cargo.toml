@@ -1,0 +1,76 @@
+[package]
+name = "hushell"
+version = "1.0.0"
+edition = "2021"
+description = "hushell - a quiet custom Windows shell: a beautifully animated white taskbar built with Tauri, without replacing explorer.exe"
+license = "MIT"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+base64 = "0.22"
+png = "0.17"
+systray-util = "0.2"
+tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
+tracing-subscriber = "0.3"
+# HTTP client
+ureq = "2"
+regex = "1"
+# the #[implement] COM macro expands to `windows_core::...` paths and
+# needs the crate under this exact name.
+windows-core = "0.58"
+# direct handle on the WebView2 controller: MoveFocus(PROGRAMMATIC) is the
+# only way to put the keyboard into the browser child of a popup shown
+# without a click (start menu typing, menu/sheet Escape).
+webview2-com = "0.39"
+uuid = { version = "1", features = ["v4"] }
+# the media widget decodes album covers (PNG or JPEG) and reduces them
+# to one accent color + a 64 px widget PNG. Only png+jpeg features.
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+
+[dependencies.windows]
+version = "0.58"
+features = [
+    "Foundation",
+    "implement",
+    "Media_Control",
+    "Storage_Streams",
+    "Win32_Foundation",
+    "Win32_Globalization",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Security",
+    "Win32_Storage_FileSystem",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_DataExchange",
+    "Win32_System_Diagnostics_Debug",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_LibraryLoader",
+    "Win32_System_Memory",
+    "Win32_System_Ole",
+    "Win32_System_Power",
+    "Win32_System_Registry",
+    "Win32_System_Shutdown",
+    "Win32_System_SystemInformation",
+    "Win32_System_SystemServices",
+    "Win32_System_Threading",
+    "Win32_System_Time",
+    "Win32_UI_Controls",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[profile.release]
+opt-level = "s"
+lto = true
+codegen-units = 1
+strip = true

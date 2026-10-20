@@ -1,0 +1,598 @@
+/* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
+@font-face {
+  font-family: "Geist";
+  src: url("fonts/Geist-latin.woff2") format("woff2");
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}
+
+:root {
+  --paper: #f1efe8;
+  --ink: #111;
+  --ink-2: rgba(0, 0, 0, 0.45);
+  --stroke: rgba(0, 0, 0, 0.35);
+  --stroke-soft: rgba(0, 0, 0, 0.14);
+  --field: #f8f6f0;
+  --hover: rgba(0, 0, 0, 0.05);
+  --invert-ink: #f1efe8;
+  --outline: rgba(17, 17, 17, 0.3);
+}
+:root[data-theme="dark"] {
+  --paper: #1b1b1f;
+  --ink: #eceade;
+  --ink-2: rgba(236, 234, 222, 0.5);
+  --stroke: rgba(236, 234, 222, 0.35);
+  --stroke-soft: rgba(236, 234, 222, 0.14);
+  --field: #232328;
+  --hover: rgba(236, 234, 222, 0.08);
+  --invert-ink: #1b1b1f;
+  --outline: rgba(0, 0, 0, 0.55);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html, body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: var(--paper);
+  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+}
+
+/* ---------- the sheet ---------- */
+
+#sheet {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  background: var(--paper);
+  color: var(--ink);
+  transform: none;
+  opacity: 1;
+  box-shadow: 0 0 0 1px var(--outline);
+}
+#sheet.out {
+  transform: translateY(10px);
+  opacity: 0;
+  transition: transform 170ms cubic-bezier(0.22, 1, 0.36, 1),
+    opacity 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+/* ---------- ink rail ---------- */
+
+#rail {
+  flex: 0 0 64px;
+  border-right: 1px solid var(--stroke-soft);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: space-between;
+  padding: 18px 0;
+}
+#rail-brand {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 3px;
+}
+#rail-sub {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  font-size: 11px;
+  letter-spacing: 2px;
+  color: var(--ink-2);
+}
+
+#stage {
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+}
+
+/* ---------- views ---------- */
+
+.view {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 20px 14px;
+  opacity: 0;
+  transform: translateX(14px);
+  pointer-events: none;
+  transition: opacity 170ms cubic-bezier(0.22, 1, 0.36, 1),
+    transform 170ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+.view.active {
+  opacity: 1;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+/* ---------- landing: the three boxes ---------- */
+
+#view-landing {
+  justify-content: center;
+  gap: 16px;
+}
+.boxes {
+  display: flex;
+  gap: 14px;
+  flex: 0 0 auto;
+}
+.box {
+  flex: 1;
+  height: 240px;
+  background: transparent;
+  border: 1px solid var(--stroke);
+  color: var(--ink);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  justify-content: flex-end;
+  gap: 4px;
+  padding: 16px;
+  cursor: pointer;
+  opacity: 1;
+  transform: none;
+}
+.box:hover,
+.box:focus-visible {
+  background: var(--ink);
+  color: var(--invert-ink);
+  outline: none;
+}
+.box:hover .glyph i,
+.box:focus-visible .glyph i {
+  border-color: var(--invert-ink);
+}
+.box:hover .box-sub,
+.box:focus-visible .box-sub {
+  color: var(--invert-ink);
+  opacity: 0.6;
+}
+.box-name {
+  font-size: 17px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+.box-sub {
+  font-size: 11.5px;
+  color: var(--ink-2);
+}
+
+/* drawn glyphs — pure strokes, no icon font */
+.glyph {
+  position: relative;
+  width: 34px;
+  height: 34px;
+  margin-bottom: auto;
+}
+.glyph i {
+  position: absolute;
+  border: 2px solid var(--ink);
+  border-radius: 50%;
+}
+.glyph-search i:first-child {
+  width: 18px;
+  height: 18px;
+  left: 2px;
+  top: 2px;
+}
+.glyph-search i:last-child {
+  width: 12px;
+  height: 2px;
+  border-radius: 1px;
+  left: 17px;
+  top: 21px;
+  transform: rotate(45deg);
+}
+.glyph-controls i {
+  border-radius: 50%;
+  width: 8px;
+  height: 8px;
+}
+.glyph-controls i:first-child { left: 3px; top: 3px; }
+.glyph-controls i:nth-child(2) { left: 21px; top: 3px; }
+.glyph-controls i:last-child { left: 12px; top: 20px; }
+.glyph-pinned i {
+  border-radius: 1px;
+  width: 12px;
+  height: 12px;
+}
+.glyph-pinned i:first-child { left: 2px; top: 2px; border-radius: 50%; }
+.glyph-pinned i:nth-child(2) { left: 19px; top: 2px; }
+.glyph-pinned i:last-child { left: 2px; top: 19px; }
+
+#landing-foot {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+  flex: 0 0 auto;
+}
+#power-btn {
+  width: 34px;
+  height: 34px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  cursor: pointer;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  flex: 0 0 auto;
+}
+#power-btn:hover,
+#power-btn:focus-visible {
+  background: var(--ink);
+  color: var(--invert-ink);
+  outline: none;
+}
+#power-btn .icon-power {
+  display: block;
+}
+
+/* ---------- shared view chrome ---------- */
+
+.view-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 12px;
+  flex: 0 0 auto;
+}
+.view-title {
+  font-size: 15px;
+  font-weight: 600;
+  letter-spacing: 0.4px;
+}
+.back {
+  width: 28px;
+  height: 28px;
+  background: transparent;
+  border: 1px solid var(--stroke);
+  cursor: pointer;
+  position: relative;
+  flex: 0 0 auto;
+}
+.back:hover { background: var(--hover); }
+.back i {
+  position: absolute;
+  width: 10px;
+  height: 2px;
+  background: var(--ink);
+  left: 8px;
+  top: 12px;
+}
+.back i:first-child { transform: rotate(-45deg) translateX(1px); }
+.back i:last-child { transform: rotate(45deg) translateX(1px); }
+
+.group-title {
+  font-size: 10.5px;
+  letter-spacing: 2px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  margin: 4px 2px 8px;
+}
+.sep {
+  height: 1px;
+  background: var(--stroke-soft);
+  margin: 12px 0;
+}
+
+/* ---------- search ---------- */
+
+#search-bar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 10px;
+  flex: 0 0 auto;
+}
+#search-input {
+  flex: 1;
+  font-family: inherit;
+  font-size: 15px;
+  color: var(--ink);
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--stroke);
+  padding: 6px 2px;
+  outline: none;
+}
+#search-input:focus { border-bottom-color: var(--ink); }
+#search-input::placeholder { color: var(--ink-2); }
+
+#results {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.hit {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 7px 10px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.hit:hover, .hit.sel { background: var(--hover); }
+.hit .h-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.hit .h-icon img { width: 20px; height: 20px; }
+.hit .h-name { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.hit .h-sub {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 40%;
+}
+#search-hint {
+  flex: 0 0 auto;
+  font-size: 11px;
+  color: var(--ink-2);
+  text-align: center;
+  padding-top: 8px;
+}
+.hidden { display: none; }
+
+/* ---------- controls ---------- */
+
+#controls-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.wgrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.wbtn {
+  font-family: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: transparent;
+  border: 1px solid var(--stroke);
+  padding: 7px 14px;
+  cursor: pointer;
+}
+.wbtn:hover { background: var(--hover); }
+.wbtn.ok { background: var(--ink); color: var(--invert-ink); }
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 9px 10px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 13.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.row:hover { background: var(--hover); }
+.row-label { font-size: 13.5px; }
+.row-note {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--ink-2);
+}
+.row.danger .row-label { color: var(--ink); font-weight: 600; }
+
+/* switches — thumb glides 160ms */
+.switch {
+  width: 38px;
+  height: 20px;
+  border: 1px solid var(--stroke);
+  background: transparent;
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.switch i {
+  position: absolute;
+  left: 2px;
+  top: 2px;
+  width: 14px;
+  height: 14px;
+  background: var(--ink-2);
+  transition: left 160ms cubic-bezier(0.22, 1, 0.36, 1), background 160ms linear;
+}
+.switch.on i {
+  left: 20px;
+  background: var(--ink);
+}
+
+.row-go {
+  width: 28px;
+  height: 20px;
+  background: transparent;
+  border: none;
+  position: relative;
+  cursor: pointer;
+  flex: 0 0 auto;
+}
+.row-go i {
+  position: absolute;
+  width: 9px;
+  height: 2px;
+  background: var(--ink);
+  top: 9px;
+}
+.row-go i:first-child { left: 6px; transform: rotate(45deg); }
+.row-go i:last-child { left: 11px; transform: rotate(-45deg); }
+
+.row-input #lockpw-input {
+  flex: 0 1 140px;
+  min-width: 96px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12.5px;
+  color: var(--ink);
+  background: var(--field);
+  border: 1px solid var(--stroke-soft);
+  outline: none;
+}
+.row-input #lockpw-input:focus { border-color: var(--stroke); }
+.row-input #lockpw-input::placeholder {
+  color: var(--ink-2);
+  font-size: 11.5px;
+}
+
+/* ---------- pinned ---------- */
+
+#pinned-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(64px, 1fr));
+  gap: 6px;
+  margin-bottom: 14px;
+}
+.tile {
+  height: 64px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: inherit;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  padding: 4px;
+  cursor: pointer;
+}
+.tile:hover { background: var(--hover); }
+.tile img { width: 26px; height: 26px; }
+.tile .ph {
+  width: 26px;
+  height: 26px;
+  border: 1px solid var(--stroke);
+}
+.tile-name {
+  font-size: 10px;
+  max-width: 100%;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.apps-ph {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 56px 24px;
+  text-align: center;
+}
+.ap-mark {
+  width: 44px;
+  height: 44px;
+  border: 1px solid var(--stroke);
+  background-image: repeating-linear-gradient(
+    45deg,
+    transparent 0,
+    transparent 5px,
+    var(--stroke-soft) 5px,
+    var(--stroke-soft) 6px
+  );
+}
+.ap-title {
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+  color: var(--ink);
+}
+.ap-note {
+  font-size: 11px;
+  color: var(--ink-2);
+  max-width: 260px;
+  line-height: 1.5;
+}
+
+/* ---------- in-page paper menu ---------- */
+
+#menu {
+  position: absolute;
+  min-width: 170px;
+  background: var(--paper);
+  border: 1px solid var(--stroke);
+  padding: 4px;
+  z-index: 30;
+}
+#menu:not(.hidden) {
+  animation: menu-land 130ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+@keyframes menu-land {
+  from { opacity: 0; transform: translateY(4px); }
+}
+.mi {
+  display: block;
+  width: 100%;
+  padding: 7px 12px;
+  background: transparent;
+  border: none;
+  color: var(--ink);
+  font-family: inherit;
+  font-size: 12.5px;
+  text-align: left;
+  cursor: pointer;
+}
+.mi:hover { background: var(--ink); color: var(--invert-ink); }
+.msep { height: 1px; background: var(--stroke-soft); margin: 4px 6px; }
+
+/* ---------- scrollbars (custom, shell-wide language) ---------- */
+
+#results::-webkit-scrollbar,
+#controls-scroll::-webkit-scrollbar,
+#pinned-scroll::-webkit-scrollbar {
+  width: 8px;
+}
+#results::-webkit-scrollbar-track,
+#controls-scroll::-webkit-scrollbar-track,
+#pinned-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+#results::-webkit-scrollbar-thumb,
+#controls-scroll::-webkit-scrollbar-thumb,
+#pinned-scroll::-webkit-scrollbar-thumb {
+  background: var(--stroke-soft);
+}
+#results::-webkit-scrollbar-thumb:hover,
+#controls-scroll::-webkit-scrollbar-thumb:hover,
+#pinned-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--stroke);
+}
