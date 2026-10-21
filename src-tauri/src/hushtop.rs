@@ -22,9 +22,9 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     DestroyIcon, EnumWindows, FindWindowExW, FindWindowW, GetAncestor, GetForegroundWindow,
-    GetParent, GetWindowLongPtrW, IsIconic, IsWindow, PostMessageW, SendMessageTimeoutW,
+    GetParent, GetWindowLongPtrW, IsIconic, IsWindow, PostMessageW,
     SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, GA_ROOT, GWL_STYLE, HWND_BOTTOM,
-    HWND_TOP, HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
+    HWND_TOP, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_HIDE,
     SW_SHOW, SW_SHOWNOACTIVATE, WM_COMMAND, WS_CAPTION, WS_CHILD, WS_MAXIMIZEBOX,
     WS_MINIMIZEBOX, WS_POPUP, WS_THICKFRAME, WS_VISIBLE, HICON,
 };
@@ -37,7 +37,6 @@ use crate::util::{log, to_wide, monitor_rect_at_cursor, virtual_screen_rect, dpi
 // Constants
 // ---------------------------------------------------------------------------
 
-const WM_SPAWN_WORKERW: u32 = 0x052C;
 const PROGMAN_TOGGLE_ICONS: usize = 0x7402;
 
 /// Icon grid (CSS px): a cell spans two ruled lines. Keep in sync with
@@ -420,25 +419,22 @@ pub unsafe fn rescan(app: &AppHandle, s: &mut Shared) {
 }
 
 // ---------------------------------------------------------------------------
-// WorkerW dance
+// Desktop band parenting — hushtop is a desktop REPLACEMENT, not a wallpaper.
+// It must own the desktop surface: cover the original icon layer AND receive
+// its clicks. That means parenting into the window that hosts SHELLDLL_DefView
+// (the original icon layer's band) and sitting ABOVE that DefView — never into
+// the spawned wallpaper WorkerW below it: a wallpaper-host child is permanently
+// buried under the Progman band, whose icon layer then draws over the desktop
+// and eats every click (hiding the icons changes nothing — the DefView window
+// stays hit-testable even with no icons drawn).
 // ---------------------------------------------------------------------------
 
-unsafe fn find_wallpaper_host(spawn: bool) -> Option<HWND> {
-    let progman = FindWindowW(w!("Progman"), PCWSTR::null()).ok()?;
-    if spawn {
-        for wp in [0xDusize, 0usize] {
-            let mut r: usize = 0;
-            let _ = SendMessageTimeoutW(
-                progman,
-                WM_SPAWN_WORKERW,
-                WPARAM(wp),
-                LPARAM(0),
-                SMTO_NORMAL,
-                1000,
-                Some(&mut r),
-            );
-        }
-    }
+/// The top-level window that directly hosts SHELLDLL_DefView — the original
+/// icon layer's band. Stock Windows keeps it in Progman; rare shell states
+/// re-home it into a sibling WorkerW. Either way this band sits at the bottom
+/// of the top-level z-order, below every normal window and the taskbar, so a
+/// child pinned above its DefView is the desktop for the whole shell.
+unsafe fn find_icon_band_host() -> Option<HWND> {
     let mut found: isize = 0;
     let _ = EnumWindows(
         Some(defview_host_cb),
@@ -447,20 +443,20 @@ unsafe fn find_wallpaper_host(spawn: bool) -> Option<HWND> {
     if found != 0 {
         return Some(hwnd(found));
     }
-    Some(progman)
+    // No DefView found (shell mid-restart): Progman is the band by definition.
+    FindWindowW(w!("Progman"), PCWSTR::null()).ok()
 }
 
-/// EnumWindows body: on the top-level window hosting SHELLDLL_DefView, grab
-/// the next top-level WorkerW (the wallpaper host) and stop the walk.
+/// EnumWindows body: the first shell window (Progman/WorkerW class only, so a
+/// third-party lookalike can never win) that DIRECTLY hosts SHELLDLL_DefView.
 unsafe extern "system" fn defview_host_cb(top: HWND, lparam: LPARAM) -> BOOL {
     let out = lparam.0 as *mut isize;
     if let Ok(dv) = FindWindowExW(top, HWND::default(), w!("SHELLDLL_DefView"), PCWSTR::null()) {
         if !dv.is_invalid() {
-            if let Ok(w) = FindWindowExW(HWND::default(), top, w!("WorkerW"), PCWSTR::null()) {
-                if !w.is_invalid() {
-                    *out = w.0 as isize;
-                    return BOOL(0);
-                }
+            let cls = crate::tasks::window_class(top);
+            if cls == "Progman" || cls == "WorkerW" {
+                *out = top.0 as isize;
+                return BOOL(0);
             }
         }
     }
@@ -545,18 +541,23 @@ unsafe fn hide_original_icons_inner(we_own_previous: bool) -> bool {
 
 unsafe fn apply_core(hh: HWND) -> isize {
     com_init();
-    // The custom desktop spans EVERY monitor: WorkerW (the wallpaper host)
-    // covers the virtual screen, so the paper must too — icons and widgets
-    // can live on any display. One webview, one map, all monitors.
+    // The custom desktop spans EVERY monitor: the desktop band (Progman or
+    // whatever top-level window hosts the original icon layer) covers the
+    // virtual screen, so the paper must too — icons and widgets can live on
+    // any display. One webview, one map, all monitors.
     let (mx, my, mw, mh) = virtual_screen_rect();
 
     // Size + place while still hidden (opaque window — no dance needed).
     let _ = SetWindowPos(hh, HWND_BOTTOM, mx, my, mw, mh, SWP_NOACTIVATE);
 
-    let mut host = find_wallpaper_host(true);
+    // Parent into the icon layer's band (normally Progman), ABOVE its
+    // DefView — the only placement where the desktop replacement both covers
+    // the original icons and receives the desktop's clicks. A retry covers a
+    // shell mid-restart; with no band at all the beat re-dances later.
+    let mut host = find_icon_band_host();
     if host.is_none() {
         std::thread::sleep(std::time::Duration::from_millis(350));
-        host = find_wallpaper_host(false);
+        host = find_icon_band_host();
     }
 
     let mut cands: Vec<HWND> = Vec::new();
@@ -576,7 +577,7 @@ unsafe fn apply_core(hh: HWND) -> isize {
             continue;
         }
         if !wallpaper_root_ok(hh) {
-            log("hushtop: candidate did not take (root is not a wallpaper host) — trying the next");
+            log("hushtop: candidate did not take (root is not a desktop band host) — trying the next");
             unchild(hh);
             let _ = SetWindowPos(hh, HWND_BOTTOM, mx, my, mw, mh, SWP_NOACTIVATE);
             continue;
@@ -592,7 +593,7 @@ unsafe fn apply_core(hh: HWND) -> isize {
             SWP_NOACTIVATE,
         );
         parent = cand.0 as isize;
-        log("hushtop: parented into the wallpaper host (verified by root class)");
+        log("hushtop: parented into the desktop band, above the original icon layer (verified by root class)");
         break;
     }
     if parent == 0 {
@@ -748,7 +749,7 @@ pub unsafe fn beat(app: &AppHandle, s: &mut Shared, beats: u64) {
         } else if s.hushtop_dance_cooldown > 0 {
             s.hushtop_dance_cooldown -= 1;
         } else {
-            log("hushtop: window is NOT inside a wallpaper host — re-dancing (main thread)");
+            log("hushtop: window is NOT inside the desktop band — re-dancing (main thread)");
             s.hushtop_dance_cooldown = 30; // 3 s at BEAT_MS=100 — no busy hammering
             s.hushtop_reapply_queued = true;
             let hh_id = hh.0 as isize;
@@ -771,7 +772,7 @@ pub unsafe fn beat(app: &AppHandle, s: &mut Shared, beats: u64) {
 
     if s.hushtop_applied && !s.hushtop_rebuild_queued && !s.hushtop_repair_queued {
         // Ancestor chain, bottom-up: [hh, parent, ... , root]. Capped at 8 —
-        // a wallpaper host chain is 2 deep; the cap only bounds a pathological
+        // a desktop band chain is 2 deep; the cap only bounds a pathological
         // re-parent race.
         let mut chain: Vec<HWND> = Vec::new();
         let mut cur = hh;

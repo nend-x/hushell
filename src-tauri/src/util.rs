@@ -141,8 +141,9 @@ pub fn monitors() -> Vec<Mon> {
 }
 
 /// Physical rect of the whole virtual screen — the union of every monitor.
-/// The custom desktop spans exactly this: WorkerW (the wallpaper host)
-/// covers the virtual screen, so the paper must too.
+/// The custom desktop spans exactly this: the desktop band it parents into
+/// (Progman / the icon layer's host) covers the virtual screen, so the paper
+/// must too.
 pub fn virtual_screen_rect() -> (i32, i32, i32, i32) {
     unsafe {
         (
