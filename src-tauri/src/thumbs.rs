@@ -915,8 +915,9 @@ fn trayfly_hide_with(app: &AppHandle, s: &mut Shared) {
         });
     });
     // The bar un-rotates its chevron on this (it does not know whether the
-    // close came from the chevron itself, the poll, or Escape).
-    let _ = app.emit_to("taskbar", "trayfly:closed", ());
+    // close came from the chevron itself, the poll, or Escape). Every bar
+    // hears it — a secondary bar's chevron used to stick open.
+    emit_to_bars(app, "trayfly:closed", &());
 }
 
 pub fn tick_trayfly(app: &AppHandle, s: &mut Shared) {
@@ -1061,6 +1062,19 @@ fn volfly_geometry(s: &Shared, bar_h: isize, anchor_css: f64) -> (i32, i32, i32,
     (x, y, card_w, card_h)
 }
 
+/// Emit an event to EVERY bar window — the primary "taskbar" plus every
+/// secondary "taskbar-sN". Flyout open/close state is per-BAR UI (each bar
+/// lights its own tray chevron / speaker button); a primary-only emit left
+/// secondary bars' buttons stuck-open whenever the close came from the
+/// poll, Escape, or another bar.
+fn emit_to_bars<T: serde::Serialize + Clone>(app: &AppHandle, event: &str, payload: &T) {
+    for label in app.webview_windows().keys() {
+        if label == "taskbar" || label.starts_with("taskbar-s") {
+            let _ = app.emit_to(label.as_str(), event, payload);
+        }
+    }
+}
+
 pub fn volfly_show(app: &AppHandle, bar_h: isize, anchor_css: f64) {
     // COM snapshot outside the lock (audio.rs wraps its own COM init).
     let state = crate::audio::state().unwrap_or(crate::audio::AudioState {
@@ -1123,7 +1137,7 @@ pub fn volfly_show(app: &AppHandle, bar_h: isize, anchor_css: f64) {
         // this the moment it opens; the 600ms pull is only the healer.
         let _ = a.emit_to("volfly", "volfly:state", &state);
         let _ = a.emit_to("volfly", "volfly:show", ());
-        let _ = a.emit_to("taskbar", "volfly:opened", ());
+        emit_to_bars(&a, "volfly:opened", &());
         crate::util::log(&format!(
             "volfly: shown rect=({},{},{},{})",
             rect.0, rect.1, rect.2, rect.3
@@ -1145,8 +1159,10 @@ pub fn volfly_hide_with(app: &AppHandle, s: &mut Shared) {
         }
     });
     // The bar un-lights its speaker button on this (the close may come from
-    // the poll, Escape, or the toggle — it never knows which).
-    let _ = app.emit_to("taskbar", "volfly:closed", ());
+    // the poll, Escape, or the toggle — it never knows which). Every bar
+    // hears it: the button that opened it lives on ONE bar, but all bars
+    // keep their own open-state honest.
+    emit_to_bars(app, "volfly:closed", &());
 }
 
 pub fn tick_volfly(app: &AppHandle, s: &mut Shared) {

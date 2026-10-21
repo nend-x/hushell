@@ -216,6 +216,10 @@ pub struct Shared {
     // --- original taskbar hiding state ---
     pub hidden_applied: bool,
     pub native_orig: Option<Rc>,
+    /// Pre-park rects of the SECONDARY native trays, so restore_native can
+    /// put them back where they were (they used to stay stranded off-screen
+    /// below the visible area after an unlock / hide-toggle off).
+    pub native_orig_sec: Vec<(isize, Rc)>,
 
     /// last foreground hwnd seen by the task beat (fast-path compare)
     pub last_fg: isize,
@@ -300,6 +304,7 @@ impl Shared {
             appbar_registered: false,
             hidden_applied: false,
             native_orig: None,
+            native_orig_sec: Vec::new(),
             last_fg: 0,
             fresh_relaunch: false,
         }

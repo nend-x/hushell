@@ -54,14 +54,18 @@ fn hwnd(v: isize) -> HWND {
 // COM (shell icon extraction wants an initialized apartment)
 // ---------------------------------------------------------------------------
 
+/// Initialize COM on the CALLING thread — every call, no once-flag. The old
+/// static meant only the FIRST caller's thread got an apartment: cmd_open
+/// runs ShellExecuteW on an IPC pool thread, and a later pool thread (or a
+/// different command) silently ran with no COM at all. CoInitializeEx on an
+/// already-initialized thread is a cheap S_FALSE.
 fn com_init() {
-    static DONE: AtomicBool = AtomicBool::new(false);
-    if !DONE.swap(true, Ordering::Relaxed) {
-        unsafe {
-            let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
-            if hr.is_err() {
-                log("hushtop: CoInitializeEx failed (continuing)");
-            }
+    unsafe {
+        let hr = CoInitializeEx(None, COINIT_APARTMENTTHREADED);
+        if hr.is_err() {
+            // RPC_E_CHANGED_MODE: the thread already runs the other
+            // apartment — COM is available either way; keep going.
+            log("hushtop: CoInitializeEx failed (continuing)");
         }
     }
 }
@@ -599,6 +603,12 @@ unsafe fn apply_core(hh: HWND) -> isize {
     parent
 }
 
+/// Public wrapper for the display-hotplug path (native::display_change):
+/// re-size + re-parent the desktop onto the CURRENT virtual screen.
+pub unsafe fn apply_core_public(hh: HWND) -> isize {
+    apply_core(hh)
+}
+
 pub unsafe fn init(app: &AppHandle, st: &crate::AppShared) {
     let (hh, we_own_previous) = {
         let s = crate::util::lock_shared(&st.0);
@@ -709,9 +719,18 @@ pub unsafe fn beat(app: &AppHandle, s: &mut Shared, beats: u64) {
                 s2.hushtop_rebuild_queued = false;
                 match built {
                     Ok(h) => {
+                        // The old window's win32 guards died with it — the
+                        // rebuild re-installs both subclasses, otherwise the
+                        // fresh hushtop would be Alt+F4-killable (the Tauri
+                        // close-request refusal still holds, but stay
+                        // layered: win32 first, like every other window).
+                        let nc = crate::frame::guard_no_close(h);
+                        let fr = crate::frame::guard_frameless(h);
                         s2.hwnd_hushtop = h;
                         crate::dnd::install(&a2);
-                        log("hushtop: window rebuilt — re-applying next beat");
+                        log(&format!(
+                            "hushtop: window rebuilt (no-close={nc}, frameless={fr}) — re-applying next beat"
+                        ));
                     }
                     Err(e) => {
                         s2.hushtop_rebuild_fails += 1;
@@ -1185,11 +1204,10 @@ pub fn notepad_add(app: &AppHandle, col: i32, row: i32) -> Result<u32, String> {
             id,
             col,
             row,
-            w: 220,
-            h: 170,
+            // Born box-to-box: 7 x 10 whole cells (252 x 180).
+            w: 252,
+            h: 180,
             text: String::new(),
-            x: None,
-            y: None,
         });
         s.cfg.save();
         log(&format!(
@@ -1225,8 +1243,10 @@ pub fn notepad_save(
         .ok_or_else(|| format!("no notepad widget #{id}"))?;
     n.col = col.clamp(-1000, 1000);
     n.row = row.clamp(-1000, 1000);
-    n.w = w.clamp(220, 720);
-    n.h = h.clamp(140, 540);
+    // Sizes are whole grid boxes (owner rule: every card fits box-to-box).
+    // Snap after the sanity clamp; the cap re-clamps a snap overshoot.
+    n.w = crate::config::snap_up(w.clamp(220, 720), crate::config::CARD_GRID_X).min(720);
+    n.h = crate::config::snap_up(h.clamp(140, 540), crate::config::CARD_GRID_Y).min(540);
     if n.text != text {
         log(&format!(
             "hushtop: HUSH notepad #{id} text saved ({} chars)",
@@ -1265,12 +1285,14 @@ pub fn notepad_del(app: &AppHandle, id: u32) -> Result<(), String> {
 /// lists (the id space is shared, so both webview collections re-sync).
 /// Position is a layout-map cell (col, row) — no pixel math anywhere.
 pub fn widget_add(app: &AppHandle, kind: &str, col: i32, row: i32) -> Result<u32, String> {
+    // Defaults are WHOLE CELLS (36 x / 18 y cadence) — every widget is born
+    // box-to-box on the ruled sheet.
     let (w, h) = match kind {
-        "volume" => (236, 108),
-        "clipboard" => (240, 236),
-        "stats" => (208, 142),
-        "lock" => (64, 64),
-        "media" => (280, 156),
+        "volume" => (252, 108),
+        "clipboard" => (252, 252),
+        "stats" => (216, 144),
+        "lock" => (72, 72),
+        "media" => (288, 162),
         other => return Err(format!("unknown widget kind '{other}'")),
     };
     let st = app.state::<crate::AppShared>();
@@ -1303,8 +1325,6 @@ pub fn widget_add(app: &AppHandle, kind: &str, col: i32, row: i32) -> Result<u32
             row,
             w,
             h,
-            x: None,
-            y: None,
         });
         s.cfg.save();
         log(&format!(
@@ -1340,12 +1360,14 @@ pub fn widget_save_pos(
         wd.row = row.clamp(-1000, 1000);
         if let Some(cw) = w {
             if cw > 0 {
-                wd.w = cw;
+                // Stored sizes are whole grid boxes — snap whatever the
+                // caller measured so the map never carries a fractional box.
+                wd.w = crate::config::snap_card_w(cw);
             }
         }
         if let Some(ch) = h {
             if ch > 0 {
-                wd.h = ch;
+                wd.h = crate::config::snap_card_h(ch);
             }
         }
     } else {

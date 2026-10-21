@@ -551,7 +551,10 @@ fn emit(app: &tauri::AppHandle, icons: &[TrayIconState]) {
             size_changed = true;
         }
     }
-    let _ = app.emit("tray_icons", &list);
+    // Only the tray flyout renders tray icons — a broadcast used to push
+    // the full base64 list to every webview (hushtop, bars, prompt...) on
+    // each change for nothing.
+    let _ = app.emit_to("trayfly", "tray_icons", &list);
     if size_changed {
         crate::thumbs::trayfly_sync_size(app);
     }

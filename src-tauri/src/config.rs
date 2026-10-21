@@ -1,4 +1,15 @@
 //! Config persistence (%APPDATA%\hushell\config.json).
+//!
+//! Schema rules (owner directive — NO backward compatibility):
+//!   * a card's spot is its GRID CELL (col, row) — col steps 36px, row steps
+//!     18px, both anchored at 14px (the same cadence hushtop.js snaps to);
+//!   * a card's SIZE is whole cells too: w is a multiple of 36, h of 18, so
+//!     every card fits exactly box-to-box on the ruled sheet. load() snaps
+//!     fractional sizes up (7.7 boxes -> 8) — the card gets bigger, never
+//!     smaller, and content can never clip;
+//!   * legacy pixel fields are gone; a config that does not parse under the
+//!     current schema, or carries invalid records, resets to the default
+//!     config (which is then written to disk).
 
 use std::collections::HashMap;
 
@@ -7,49 +18,33 @@ use windows::Win32::Foundation::HANDLE;
 use windows::Win32::System::Com::CoTaskMemFree;
 use windows::Win32::UI::Shell::{SHGetKnownFolderPath, FOLDERID_RoamingAppData, KNOWN_FOLDER_FLAG};
 
-// The widget layout map: a card's spot is its GRID CELL (col, row), never
-// pixels. col steps 36px, row steps 18px, both anchored at 14px — the same
-// cadence hushtop.js snaps to (CARD_ANCHOR / CARD_GRID / CARD_GRID_Y). The
-// webview derives pixels at render time, so a save→reload round trip lands
-// EXACTLY on the arranged cell regardless of DPI, monitor size, or when the
-// webview boots. Rust stores the map verbatim and never touches pixels.
+use crate::util::log;
+
+// The card grid cadence — MUST stay in sync with hushtop.js
+// (CARD_GRID / CARD_GRID_Y / CARD_ANCHOR).
+pub const CARD_GRID_X: i32 = 36;
+pub const CARD_GRID_Y: i32 = 18;
+const CARD_MAX: i32 = 4096;
+const CELL_MAX: i32 = 1000; // ±1000 sanity bound — out of bounds is allowed by design
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Notepad {
     pub id: u32,
-    #[serde(default)]
     pub col: i32,
-    #[serde(default)]
     pub row: i32,
-    #[serde(default)]
     pub w: i32,
-    #[serde(default)]
     pub h: i32,
     pub text: String,
-    /// Legacy pixel position (pre layout-map). Migrated into col/row at
-    /// load, then left as None forever.
-    #[serde(default)]
-    pub x: Option<i32>,
-    #[serde(default)]
-    pub y: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
 pub struct HushWidget {
     pub id: u32,
     pub kind: String,
-    #[serde(default)]
     pub col: i32,
-    #[serde(default)]
     pub row: i32,
-    #[serde(default)]
     pub w: i32,
-    #[serde(default)]
     pub h: i32,
-    #[serde(default)]
-    pub x: Option<i32>,
-    #[serde(default)]
-    pub y: Option<i32>,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -134,50 +129,62 @@ pub fn data_dir() -> Option<std::path::PathBuf> {
     }
 }
 
+/// Round a card dimension UP to whole grid boxes (7.7 boxes -> 8): the card
+/// gets slightly bigger and lands exactly box-to-box on the ruled sheet.
+/// Every caller clamps v >= 1 first, so the classic positive-integer
+/// formula is exact (int_roundings/div_ceil is still unstable here).
+pub fn snap_up(v: i32, grid: i32) -> i32 {
+    ((v + grid - 1) / grid) * grid
+}
+
+/// Snap a width to whole cells, clamped to the sanity cap. The floor is one
+/// box — smaller values are garbage, not layouts.
+pub fn snap_card_w(v: i32) -> i32 {
+    snap_up(v.clamp(1, CARD_MAX), CARD_GRID_X)
+}
+
+/// Snap a height to whole cells (the finer 18px cadence), same rules.
+pub fn snap_card_h(v: i32) -> i32 {
+    snap_up(v.clamp(1, CARD_MAX), CARD_GRID_Y)
+}
+
 impl Config {
     pub fn load() -> Config {
         if let Some(p) = config_path() {
             if let Ok(txt) = std::fs::read_to_string(&p) {
-                if let Ok(mut c) = serde_json::from_str::<Config>(&txt) {
-                    c.migrate_layout();
-                    return c;
+                match serde_json::from_str::<Config>(&txt) {
+                    Ok(mut c) => {
+                        if c.normalize() {
+                            return c;
+                        }
+                        log("config: invalid record(s) — resetting to the default config");
+                    }
+                    Err(e) => log(&format!(
+                        "config: parse failed ({e}) — resetting to the default config"
+                    )),
                 }
             }
         }
-        Config::default()
+        // No backward compatibility: an unparsable or invalid config resets
+        // to defaults, and the default is persisted right away so the file
+        // on disk always matches the current schema.
+        let d = Config::default();
+        d.save();
+        d
     }
 
-    /// One-time migration: legacy pixel positions → layout-map cells.
-    /// x = 14 + col*36, y = 14 + row*18 — inverted with a rounded divide.
-    /// Only acts on records that still carry pixels; runs on every load so
-    /// older config.json files upgrade silently on first boot.
-    fn migrate_layout(&mut self) {
-        const ANCHOR: f32 = 14.0;
-        const GRID_X: f32 = 36.0;
-        const GRID_Y: f32 = 18.0;
-        let cell = |px: i32, grid: f32| -> i32 {
-            (((px as f32 - ANCHOR) / grid).round() as i32).clamp(0, 1000)
-        };
+    /// Validate every card record and snap its size to whole grid boxes.
+    /// Returns false when ANY record is broken — the caller resets the whole
+    /// config to default (owner rule: an incorrect config never limps along).
+    fn normalize(&mut self) -> bool {
+        let mut ok = true;
         for n in &mut self.notepads {
-            if let (Some(px), Some(py)) = (n.x, n.y) {
-                n.col = cell(px, GRID_X);
-                n.row = cell(py, GRID_Y);
-                n.x = None;
-                n.y = None;
-            }
-            n.col = n.col.clamp(0, 1000);
-            n.row = n.row.clamp(0, 1000);
+            ok &= valid_cell(n.col, n.row) && snap_dims(&mut n.w, &mut n.h);
         }
         for w in &mut self.widgets {
-            if let (Some(px), Some(py)) = (w.x, w.y) {
-                w.col = cell(px, GRID_X);
-                w.row = cell(py, GRID_Y);
-                w.x = None;
-                w.y = None;
-            }
-            w.col = w.col.clamp(0, 1000);
-            w.row = w.row.clamp(0, 1000);
+            ok &= valid_cell(w.col, w.row) && snap_dims(&mut w.w, &mut w.h);
         }
+        ok
     }
 
     pub fn save(&self) {
@@ -186,8 +193,30 @@ impl Config {
                 let _ = std::fs::create_dir_all(parent);
             }
             if let Ok(txt) = serde_json::to_string_pretty(self) {
-                let _ = std::fs::write(&p, txt);
+                // Atomic write: temp file + rename. A crash mid-write used to
+                // leave a truncated config.json — the next boot then wiped the
+                // arrangement back to defaults. The rename replaces the target
+                // on the same volume (std::fs::rename uses MOVEFILE_REPLACE_EXISTING).
+                let tmp = p.with_extension("json.tmp");
+                if std::fs::write(&tmp, &txt).is_ok() {
+                    if std::fs::rename(&tmp, &p).is_err() {
+                        let _ = std::fs::remove_file(&tmp);
+                    }
+                }
             }
         }
     }
+}
+
+fn valid_cell(col: i32, row: i32) -> bool {
+    col.abs() <= CELL_MAX && row.abs() <= CELL_MAX
+}
+
+fn snap_dims(w: &mut i32, h: &mut i32) -> bool {
+    if *w <= 0 || *h <= 0 || *w > CARD_MAX || *h > CARD_MAX {
+        return false;
+    }
+    *w = snap_up(*w, CARD_GRID_X);
+    *h = snap_up(*h, CARD_GRID_Y);
+    true
 }

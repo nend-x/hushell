@@ -1,8 +1,14 @@
 {
   "identifier": "default",
-  "description": "All hushell windows: taskbar, hover preview card, live-wallpaper desktop, name dialog, task context menu, tray flyout, volume drop-up, start menu, lockscreen, wingroup list. Every window label must be listed here \u2014 tauri gates event listen() and window ops behind this list, and a missing label silently loses every listener.",
+  "description": "All hushell windows: taskbar, secondary-display bars (taskbar-s1..sN), hover preview card, live-wallpaper desktop, name dialog, task context menu, tray flyout, volume drop-up, start menu, lockscreen, wingroup list. Every window label must be listed here — tauri gates event listen() behind this list, and a missing label silently loses every listener (the secondary bars lost tasks/lang/close events exactly this way). The glob covers bars created on the fly by display hotplug.",
   "windows": [
     "taskbar",
+    "taskbar-s1",
+    "taskbar-s2",
+    "taskbar-s3",
+    "taskbar-s4",
+    "taskbar-s5",
+    "taskbar-s*",
     "preview",
     "hushtop",
     "prompt",

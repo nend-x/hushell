@@ -23,8 +23,8 @@ use windows::Win32::System::SystemServices::{
 };
 use windows::Win32::UI::Shell::{
     DragQueryFileW, ILCreateFromPathW, ILFree, SHCreateDataObject, SHFileOperationW,
-    SHParseDisplayName, FO_COPY, FO_MOVE, HDROP, SHFILEOPSTRUCTW, FOF_NOCONFIRMATION, FOF_SILENT,
-    FOF_NOERRORUI,
+    SHParseDisplayName, FO_COPY, FO_DELETE, FO_MOVE, HDROP, SHFILEOPSTRUCTW, FOF_ALLOWUNDO,
+    FOF_NOCONFIRMATION, FOF_SILENT, FOF_NOERRORUI,
 };
 use windows::Win32::UI::Shell::Common::ITEMIDLIST;
 use windows::Win32::UI::WindowsAndMessaging::{
@@ -633,6 +633,27 @@ fn rehome_icon(app: &AppHandle, name: &str) {
     let _ = app.emit("hushtop:icons", &items);
 }
 
+/// Recycle-bin delete (folders included). A raw remove_file/remove_dir_all
+/// used to obliterate the source for good — a MOVE drag-out of the desktop
+/// lost the file forever if the move target later vanished. The shell's own
+/// move-out sends the source to the bin; so do we.
+unsafe fn recycle_delete(path: &Path) -> Result<(), String> {
+    let mut from = crate::util::to_wide(&path.as_os_str().to_string_lossy());
+    from.push(0); // double-NUL terminated list
+    let mut op = SHFILEOPSTRUCTW {
+        hwnd: windows::Win32::Foundation::HWND::default(),
+        wFunc: FO_DELETE,
+        pFrom: windows::core::PCWSTR(from.as_ptr()),
+        fFlags: (FOF_ALLOWUNDO.0 | FOF_NOCONFIRMATION.0 | FOF_SILENT.0 | FOF_NOERRORUI.0) as u16,
+        ..Default::default()
+    };
+    let r = SHFileOperationW(&mut op);
+    if r != 0 || op.fAnyOperationsAborted.as_bool() {
+        return Err(format!("SHFileOperationW(FO_DELETE) -> {r}"));
+    }
+    Ok(())
+}
+
 /// Post-drop bookkeeping, then the JS-side gesture teardown. A true MOVE
 /// out of the desktop deletes the SOURCE file (the target already copied
 /// it — the IDropSource contract); a boomerang never deletes (cmd_move did
@@ -647,19 +668,14 @@ unsafe fn cleanup_drag(
     match result {
         Ok(effect) => {
             if effect.0 & DROPEFFECT_MOVE.0 != 0 && !own {
-                let removed = if path.is_dir() {
-                    std::fs::remove_dir_all(path)
-                } else {
-                    std::fs::remove_file(path)
-                };
-                match removed {
+                match recycle_delete(path) {
                     Ok(()) => {
                         let st = app.state::<crate::AppShared>();
                         let mut s = lock_shared(&st.0);
                         s.cfg.hushtop_positions.remove(name);
                         s.cfg.save();
                         hushtop::rescan(app, &mut s);
-                        log(&format!("dnd: \"{name}\" moved off the desktop"));
+                        log(&format!("dnd: \"{name}\" moved off the desktop (to the recycle bin)"));
                     }
                     Err(e) => {
                         log(&format!("dnd: MOVE cleanup failed for \"{name}\": {e}"));

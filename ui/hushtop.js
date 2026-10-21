@@ -590,15 +590,21 @@ function makeNotepad(n) {
   return { el, ta };
 }
 
-// the drop/typing persists the CELL + size — pixels are never stored
+// the drop/typing persists the CELL + size — pixels are never stored.
+// Size snaps UP to whole grid boxes and is APPLIED before the commit, so
+// the stored numbers are always exactly what is on screen.
 function saveNotepad(id, el, ta) {
   const cell = cardCell(el.offsetLeft, el.offsetTop);
+  const sw = Math.min(720, Math.max(252, Math.ceil(el.offsetWidth / CARD_GRID) * CARD_GRID));
+  const sh = Math.min(540, Math.max(144, Math.ceil(el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y));
+  if (sw !== el.offsetWidth) el.style.width = sw + "px";
+  if (sh !== el.offsetHeight) el.style.height = sh + "px";
   invoke("hushtop_notepad_save", {
     id,
     col: cell.c,
     row: cell.r,
-    w: el.offsetWidth,
-    h: el.offsetHeight,
+    w: sw,
+    h: sh,
     text: ta.value,
   }).catch(() => {});
 }
@@ -650,7 +656,10 @@ function fitVolume(entry, animate, persist) {
   const el = entry.el;
   const from = el.offsetHeight;
   el.style.height = "auto";
-  const target = el.offsetHeight;
+  // Box-to-box: the fitted height rounds UP to whole 18px rows — the card
+  // gets a few px taller, never clips, and always lands exactly on the
+  // ruled lines.
+  const target = Math.ceil(el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y;
   el.style.height = from + "px";
   if (!animate || from === target) {
     el.style.height = target + "px";
@@ -674,13 +683,21 @@ function fitVolume(entry, animate, persist) {
 
 function saveWidgetGeom(entry) {
   // the layout map is the truth: commit the RECORDED cell (never a
-  // rendered position — keeps the commit unambiguous) + the content size
+  // rendered position — keeps the commit unambiguous) + the content size.
+  // Sizes are WHOLE GRID BOXES (owner rule: every card fits box-to-box):
+  // snap the measured geometry up, APPLY it so what-you-see is what is
+  // stored, then commit. For the volume card both are already snapped by
+  // fitVolume — these lines are no-ops there.
+  const sw = Math.ceil(entry.el.offsetWidth / CARD_GRID) * CARD_GRID;
+  const sh = Math.ceil(entry.el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y;
+  if (sw !== entry.el.offsetWidth) entry.el.style.width = sw + "px";
+  if (sh !== entry.el.offsetHeight) entry.el.style.height = sh + "px";
   invoke("hushtop_widget_save", {
     id: entry.rec.id,
     col: entry.rec.col,
     row: entry.rec.row,
-    w: entry.el.offsetWidth,
-    h: entry.el.offsetHeight,
+    w: sw,
+    h: sh,
   }).catch(() => {});
 }
 
@@ -1186,9 +1203,10 @@ function makeWidget(w) {
 function renderWidgets(list) {
   const seen = new Set();
   for (const w of list) {
-    if (w.kind === "media" && (w.w !== 280 || w.h !== 156)) {
-      w.w = 280;
-      w.h = 156;
+    if (w.kind === "media" && (w.w !== 288 || w.h !== 162)) {
+      // media is a fixed-design card — but still box-to-box (8 x 9 cells)
+      w.w = 288;
+      w.h = 162;
     }
     seen.add(w.id);
     const e = widgets.get(w.id);

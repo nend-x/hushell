@@ -324,7 +324,7 @@ unsafe fn tick_hide_native(s: &mut Shared, beats: u64) {
             hide_one(tray);
         }
         for h in find_secondary_trays() {
-            hide_one(h);
+            hide_one_tracked(h, &mut *s);
         }
         s.hidden_applied = true;
         util::log("hide: native taskbar hidden (one-shot)");
@@ -339,7 +339,7 @@ unsafe fn tick_hide_native(s: &mut Shared, beats: u64) {
     }
     for h in find_secondary_trays() {
         if is_taskbar_showing(h) {
-            hide_one(h);
+            hide_one_tracked(h, s);
         }
     }
 }
@@ -367,6 +367,29 @@ unsafe fn hide_one(h: HWND) {
     }
 }
 
+/// Park a SECONDARY native tray, remembering where it lived so the restore
+/// can put it back. The primary tray's rect is tracked separately
+/// (Shared.native_orig); secondaries used to come back from the park
+/// stranded off-screen below the screen (alpha restored, position never).
+unsafe fn hide_one_tracked(h: HWND, s: &mut Shared) {
+    let id = h.0 as isize;
+    if !s.native_orig_sec.iter().any(|(k, _)| *k == id) {
+        let mut rc = RECT::default();
+        if GetWindowRect(h, &mut rc).is_ok() && rc.top < util::screen_height() {
+            s.native_orig_sec.push((
+                id,
+                Rc {
+                    l: rc.left,
+                    t: rc.top,
+                    r: rc.right,
+                    b: rc.bottom,
+                },
+            ));
+        }
+    }
+    hide_one(h);
+}
+
 /// ABM_REMOVE result handoff to Shared (hide_one has no &mut Shared).
 static S_OGBAR_RELEASED: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
@@ -384,7 +407,9 @@ fn is_offscreen(h: HWND) -> bool {
     unsafe { GetWindowRect(h, &mut rc).is_ok() && rc.top >= util::screen_height() }
 }
 
-/// Restore native taskbars (alpha 255, position back, shown).
+/// Restore native taskbars (alpha 255, position back, shown). Secondary
+/// trays return to their tracked pre-park rects — not to wherever the park
+/// left them.
 unsafe fn restore_native(s: &mut Shared) {
     if let Some(tray) = find_primary_tray() {
         set_window_alpha(tray, 255);
@@ -405,10 +430,24 @@ unsafe fn restore_native(s: &mut Shared) {
         );
         let _ = ShowWindow(tray, SW_SHOW);
     }
-    for h in find_secondary_trays() {
+    for (id, rc) in &s.native_orig_sec {
+        let h = hwnd(*id);
+        if !IsWindow(h).as_bool() {
+            continue;
+        }
         set_window_alpha(h, 255);
+        let _ = SetWindowPos(
+            h,
+            HWND::default(),
+            rc.l,
+            rc.t,
+            rc.w(),
+            rc.h(),
+            SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+        );
         let _ = ShowWindow(h, SW_SHOW);
     }
+    s.native_orig_sec.retain(|(id, _)| IsWindow(hwnd(*id)).as_bool());
     s.hidden_applied = false;
 }
 
@@ -687,6 +726,11 @@ unsafe fn beat_hide_native(app: &AppHandle, s: &mut Shared, beats: u64) {
 /// Bar geometry BEFORE the tray beat: the tray strip is inserted after the
 /// bar in z-order, so whatever happens here, the strip ends up on top.
 unsafe fn beat_bar_geometry(_app: &AppHandle, s: &mut Shared, _beats: u64) {
+    // Locked: the overlay owns the screen and the bars are parked. Re-assert
+    // here would SWP_SHOWWINDOW them right back ABOVE the lockscreen.
+    if crate::lockscreen::is_locked() {
+        return;
+    }
     reassert_bar(s);
     if !s.bar_fs_hidden {
         ensure_topmost_bar(s);
@@ -1135,6 +1179,16 @@ unsafe extern "system" fn host_proc(
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE => {
+            // A monitor joined, left, or changed resolution. Without this
+            // the secondary bars kept their stale monitor rects (bars and
+            // reservations misplaced until restart) and hushtop kept the
+            // old virtual-screen size.
+            if let Some(app) = APP_HANDLE.get() {
+                unsafe { display_change(app) };
+            }
+            LRESULT(0)
+        }
         crate::clipboard::WM_CLIPBOARDUPDATE => {
             if let Some(app) = APP_HANDLE.get() {
                 crate::clipboard::on_clipboard_update(app);
@@ -1146,6 +1200,203 @@ unsafe extern "system" fn host_proc(
             LRESULT(0)
         }
         _ => DefWindowProcW(_hwnd, msg, wparam, lparam),
+    }
+}
+
+/// Display topology changed (WM_DISPLAYCHANGE): re-sync every secondary bar
+/// with the live monitor list and re-fit hushtop to the new virtual screen.
+/// Runs on the native (host) thread; window create/destroy dispatches to the
+/// main thread. Never touches Win32 placement under the state lock.
+unsafe fn display_change(app: &AppHandle) {
+    let st = app.state::<crate::AppShared>();
+    let mons = util::monitors();
+
+    // --- 1) refresh each bar's monitor rect; collect orphans -------------
+    let mut orphans: Vec<isize> = Vec::new();
+    let mut to_remove: Vec<isize> = Vec::new();
+    {
+        let mut s = util::lock_shared(&st.0);
+        for sb in s.sec_bars.iter_mut() {
+            if sb.hwnd == 0 || !IsWindow(hwnd(sb.hwnd)).as_bool() {
+                to_remove.push(sb.hwnd);
+                continue;
+            }
+            // The monitor whose rect CONTAINS the bar's center. The window
+            // may be momentarily misplaced (hidden bar at parked coords), so
+            // fall back to matching by rect union instead of position.
+            let mut rc = RECT::default();
+            if GetWindowRect(hwnd(sb.hwnd), &mut rc).is_err() {
+                continue;
+            }
+            let cx = (rc.left + rc.right) / 2;
+            let cy = (rc.top + rc.bottom) / 2;
+            let hit = mons.iter().find(|m| {
+                cx >= m.x && cx < m.x + m.w && cy >= m.y && cy < m.y + m.h
+            });
+            match hit {
+                Some(m) => {
+                    if sb.mon != m.rect() {
+                        util::log(&format!(
+                            "display: bar @ {:?} re-homed to monitor @ {},{} {}x{}",
+                            sb.mon, m.x, m.y, m.w, m.h
+                        ));
+                        sb.mon = m.rect();
+                        // The reservation must follow the new rect; the next
+                        // geometry beat re-asserts (rect moved -> ABM runs).
+                    }
+                }
+                None => {
+                    // The bar's home monitor is gone (or its geometry moved
+                    // entirely off) — retire this strip.
+                    orphans.push(sb.hwnd);
+                    to_remove.push(sb.hwnd);
+                }
+            }
+        }
+        s.sec_bars.retain(|b| !to_remove.contains(&b.hwnd));
+        // Monitors that have no bar at all -> build one on the main thread.
+        let covered = |mx: i32, my: i32| -> bool {
+            s.sec_bars
+                .iter()
+                .any(|b| b.mon.0 == mx && b.mon.1 == my)
+        };
+        let missing: Vec<(i32, i32, i32, i32)> = mons
+            .iter()
+            .filter(|m| !m.primary && !covered(m.x, m.y))
+            .map(|m| m.rect())
+            .collect();
+        if !missing.is_empty() {
+            let a2 = app.clone();
+            let _ = app.run_on_main_thread(move || unsafe {
+                for mon in missing {
+                    let st = a2.state::<crate::AppShared>();
+                    let label = {
+                        let s = crate::util::lock_shared(&st.0);
+                        let mut n = s.sec_bars.len() + 1;
+                        while a2.get_webview_window(&format!("taskbar-s{}", n)).is_some() {
+                            n += 1;
+                        }
+                        format!("taskbar-s{}", n)
+                    };
+                    let built = (|| -> Result<isize, String> {
+                        let w = tauri::WebviewWindowBuilder::new(
+                            &a2,
+                            label.clone(),
+                            tauri::WebviewUrl::App("index.html".into()),
+                        )
+                        .title("hushell-bar")
+                        .decorations(false)
+                        .transparent(true)
+                        .shadow(false)
+                        .always_on_top(true)
+                        .skip_taskbar(true)
+                        .resizable(false)
+                        .focused(false)
+                        .visible(false)
+                        .effects(tauri::utils::config::WindowEffectsConfig {
+                            effects: vec![
+                                tauri::window::Effect::Acrylic,
+                                tauri::window::Effect::Mica,
+                                tauri::window::Effect::Blur,
+                            ],
+                            ..Default::default()
+                        })
+                        .build()
+                        .map_err(|e| e.to_string())?;
+                        let h = w.hwnd().map_err(|e| e.to_string())?;
+                        Ok(h.0 as isize)
+                    })();
+                    let h = match built {
+                        Ok(h) => h,
+                        Err(e) => {
+                            util::log(&format!("display: {label} hotplug build failed: {e}"));
+                            continue;
+                        }
+                    };
+                    util::log(&format!("display: {label} built for monitor @ {},{}", mon.0, mon.1));
+                    let mut s = crate::util::lock_shared(&st.0);
+                    // Shell-window treatment: not a toolwindow (the AppBar
+                    // system refuses those), no-activate, guards on.
+                    let ex = GetWindowLongPtrW(hwnd(h), GWL_EXSTYLE);
+                    SetWindowLongPtrW(
+                        hwnd(h),
+                        GWL_EXSTYLE,
+                        (ex & !WS_EX_TOOLWINDOW.0 as isize) | WS_EX_NOACTIVATE.0 as isize,
+                    );
+                    let nc = crate::frame::guard_no_close(h);
+                    let fr = crate::frame::guard_frameless(h);
+                    strip_nc_frame(hwnd(h));
+                    let registered = appbar_register_at(hwnd(h), mon).is_some();
+                    let wr = bar_window_rect_at(mon, hwnd(h));
+                    let _ = SetWindowPos(
+                        hwnd(h),
+                        HWND_TOPMOST,
+                        wr.l,
+                        wr.t,
+                        wr.w(),
+                        wr.h(),
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                    let _ = ShowWindow(hwnd(h), SW_SHOW);
+                    s.sec_bars.push(crate::shared::SecBar {
+                        hwnd: h,
+                        mon,
+                        registered,
+                        fs_streak: 0,
+                        fs_hidden: false,
+                    });
+                    util::log(&format!(
+                        "display: {label} placed @ {},{} (registered={registered}, no-close={nc}, frameless={fr})",
+                        mon.0, mon.1
+                    ));
+                }
+            });
+        }
+    }
+
+    // --- 2) unregister orphaned bars + destroy their windows -------------
+    for id in orphans {
+        let mut abd = APPBARDATA {
+            cbSize: std::mem::size_of::<APPBARDATA>() as u32,
+            hWnd: hwnd(id),
+            ..Default::default()
+        };
+        SHAppBarMessage(ABM_REMOVE, &mut abd);
+        util::log(&format!("display: orphaned bar {:#x} — appbar removed", id));
+        let a2 = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            // Find the window by hwnd among ALL webview windows and destroy
+            // it (destroy() bypasses the CloseRequested refusal on purpose —
+            // the window is gone with its monitor).
+            for (label, w) in a2.webview_windows() {
+                if let Ok(h) = w.hwnd() {
+                    if h.0 as isize == id {
+                        util::log(&format!("display: destroying {label} (monitor gone)"));
+                        let _ = w.destroy();
+                        break;
+                    }
+                }
+            }
+        });
+    }
+
+    // --- 3) hushtop must span the NEW virtual screen ----------------------
+    {
+        let s = util::lock_shared(&st.0);
+        let hh = s.hwnd_hushtop;
+        if hh != 0 && IsWindow(hwnd(hh)).as_bool() {
+            let a2 = app.clone();
+            let _ = app.run_on_main_thread(move || unsafe {
+                let st = a2.state::<crate::AppShared>();
+                let parent = crate::hushtop::apply_core_public(hwnd(hh));
+                let mut s = crate::util::lock_shared(&st.0);
+                if parent != 0 {
+                    s.hushtop_parent = parent;
+                    s.hushtop_applied = true;
+                }
+                util::log("display: hushtop re-fitted to the new virtual screen");
+            });
+        }
     }
 }
 
@@ -1702,6 +1953,18 @@ unsafe fn task_menu_execute(action: &str, pid: u32, alive: &[isize], exe: &str) 
 /// presses everywhere else via the hardware key state (same pattern as
 /// the trayfly/volfly polls). 100 ms beat: a click shorter than one beat
 /// can slip through — the same tolerance the trayfly lives with.
+/// True when the cursor sits over ANY hushell bar — the primary or a
+/// secondary strip. Popup outside-press detection exempts all of them:
+/// a press on the bar that owns the popup must not dismiss it (the old
+/// check only knew the primary bar, so a menu opened from a secondary
+/// died the moment the user pressed that bar again).
+fn cursor_over_any_bar(s: &Shared) -> bool {
+    (s.hwnd_bar != 0 && thumbs::cursor_over_hwnd(s.hwnd_bar))
+        || s.sec_bars
+            .iter()
+            .any(|b| b.hwnd != 0 && thumbs::cursor_over_hwnd(b.hwnd))
+}
+
 pub unsafe fn tick_menu(app: &AppHandle, s: &mut Shared) {
     // --- the task context menu ---
     if s.menu_visible {
@@ -1715,7 +1978,7 @@ pub unsafe fn tick_menu(app: &AppHandle, s: &mut Shared) {
             let rdown = GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000 != 0;
             let outside = (ldown || rdown)
                 && !thumbs::cursor_over_hwnd(hm)
-                && !thumbs::cursor_over_hwnd(s.hwnd_bar);
+                && !cursor_over_any_bar(s);
             if outside {
                 s.menu_visible = false;
                 s.menu_opened_at = None;
@@ -1731,7 +1994,7 @@ pub unsafe fn tick_menu(app: &AppHandle, s: &mut Shared) {
         let rdown = GetAsyncKeyState(VK_RBUTTON.0 as i32) as u16 & 0x8000 != 0;
         let outside = (ldown || rdown)
             && !thumbs::cursor_over_hwnd(hw)
-            && !thumbs::cursor_over_hwnd(s.hwnd_bar);
+            && !cursor_over_any_bar(s);
         if outside {
             let _ = ShowWindow(hwnd(hw), SW_HIDE);
             util::log("wingroup: dismissed (press outside the sheet)");

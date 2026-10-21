@@ -92,6 +92,8 @@ fn main() {
             audio_mute_get,
             audio_mute_set,
             audio_state,
+            audio_sessions,
+            audio_session_set,
             clipboard_history,
             clipboard_copy,
             clipboard_clear,
@@ -351,11 +353,18 @@ fn main() {
             // (place_inner pins it to the primary's bottom-left).
             let sec_created: Vec<(String, isize, (i32, i32, i32, i32))> = {
                 let mut v = Vec::new();
-                for (i, m) in crate::util::monitors().into_iter().enumerate() {
+                // Counter-based labels (taskbar-s1..sN in creation order) —
+                // NOT the monitor-enumerate index. The guard list below and
+                // the capability file assume sec_bars[i] == "taskbar-s{i+1}";
+                // a monitor list whose primary is not index 0 used to break
+                // that pairing.
+                let mut sec_n = 0usize;
+                for m in crate::util::monitors().into_iter() {
                     if m.primary {
                         continue;
                     }
-                    let label = format!("taskbar-s{}", i);
+                    sec_n += 1;
+                    let label = format!("taskbar-s{}", sec_n);
                     let mon = m.rect();
                     match WebviewWindowBuilder::new(
                         app,
@@ -498,6 +507,11 @@ fn preview_show(
     ids: Vec<isize>,
     anchor_x: f64,
 ) -> Result<(), String> {
+    // The shell is locked: nothing on the desktop may answer the user
+    // (the bars are parked anyway — this kills any in-flight event).
+    if lockscreen::is_locked() {
+        return Ok(());
+    }
     // The caller bar decides the anchor space: hover on a secondary bar
     // must pop the card above THAT bar, on that monitor.
     let bar = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
@@ -523,6 +537,9 @@ fn preview_activate(app: tauri::AppHandle, id: isize) {
 
 #[tauri::command]
 fn preview_overflow(app: tauri::AppHandle) -> Result<(), String> {
+    if lockscreen::is_locked() {
+        return Ok(());
+    }
     thumbs::wingroup_show(&app)
 }
 
@@ -549,6 +566,9 @@ fn wingroup_data(app: tauri::AppHandle) -> Option<shared::WingroupShow> {
 /// the CALLER bar's monitor) with New window / Close / End task.
 #[tauri::command]
 fn task_menu(window: tauri::WebviewWindow, app: tauri::AppHandle, ids: Vec<isize>) {
+    if lockscreen::is_locked() {
+        return;
+    }
     let bar = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
     native::task_menu(&app, bar, ids);
 }
@@ -604,6 +624,9 @@ fn tray_click(app: tauri::AppHandle, key: String, button: String) {
 
 #[tauri::command]
 fn trayfly_show(window: tauri::WebviewWindow, app: tauri::AppHandle, anchor_x: f64) {
+    if lockscreen::is_locked() {
+        return;
+    }
     let bar = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
     thumbs::trayfly_show(&app, bar, anchor_x);
 }
@@ -615,6 +638,9 @@ fn trayfly_hide(app: tauri::AppHandle) {
 
 #[tauri::command]
 fn volfly_show(window: tauri::WebviewWindow, app: tauri::AppHandle, anchor_x: f64) {
+    if lockscreen::is_locked() {
+        return;
+    }
     let bar = window.hwnd().map(|h| h.0 as isize).unwrap_or(0);
     thumbs::volfly_show(&app, bar, anchor_x);
 }
@@ -816,6 +842,16 @@ fn audio_mute_set(muted: bool) -> Result<(), String> {
 #[tauri::command]
 fn audio_state() -> Result<audio::AudioState, String> {
     audio::state()
+}
+
+#[tauri::command]
+fn audio_sessions() -> Result<Vec<audio::AudioSession>, String> {
+    audio::sessions()
+}
+
+#[tauri::command]
+fn audio_session_set(id: String, vol: f32) -> Result<(), String> {
+    audio::session_set(&id, vol)
 }
 
 #[tauri::command]

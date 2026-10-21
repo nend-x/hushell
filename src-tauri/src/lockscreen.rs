@@ -106,6 +106,13 @@ pub fn lock(app: &AppHandle) {
     crate::startmenu::hide(app);
     crate::native::task_menu_hide(app);
     crate::thumbs::trayfly_hide(app);
+    {
+        // volfly_hide_with wants the state lock — same shape as the command
+        // wrapper in main.rs.
+        let st = app.state::<crate::AppShared>();
+        let mut s = crate::util::lock_shared(&st.0);
+        crate::thumbs::volfly_hide_with(app, &mut s);
+    }
     let a2 = app.clone();
     let _ = app.run_on_main_thread(move || {
         // Full geometry assert (places over the virtual screen, TOPMOST,
@@ -140,30 +147,40 @@ pub fn unlock(app: &AppHandle, password: &str) -> Result<(), String> {
     let _ = app.emit("lockscreen:hide", ());
     let a2 = app.clone();
     let _ = app.run_on_main_thread(move || {
-        if let Some(w) = a2.get_webview_window("taskbar") {
-            let _ = w.as_ref().show();
-            let _ = w.show();
-        }
+        // Restore EVERY bar the lock parked — the primary plus every
+        // secondary strip. Raw ShowWindow + TOPMOST re-raise (same
+        // primitive the fullscreen-hide path uses; tao flag rewrites are
+        // avoided on purpose).
         let st = a2.state::<crate::AppShared>();
-        let hb = crate::util::lock_shared(&st.0).hwnd_bar;
-        if hb != 0 {
-            unsafe {
-                let h = HWND(hb as _);
-                if IsWindow(h).as_bool() {
-                    let _ = ShowWindow(h, SW_SHOW);
-                    let _ = SetWindowPos(
-                        h,
-                        HWND_TOPMOST,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                    );
+        let ids: Vec<isize> = {
+            let s = crate::util::lock_shared(&st.0);
+            let mut v = vec![s.hwnd_bar];
+            v.extend(s.sec_bars.iter().map(|b| b.hwnd));
+            v
+        };
+        for id in ids {
+            if id != 0 {
+                unsafe {
+                    let h = HWND(id as _);
+                    if IsWindow(h).as_bool() {
+                        let _ = ShowWindow(h, SW_SHOW);
+                        let _ = SetWindowPos(
+                            h,
+                            HWND_TOPMOST,
+                            0,
+                            0,
+                            0,
+                            0,
+                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                        );
+                    }
                 }
             }
         }
-        log("lockscreen: hushbar restored");
+        if let Some(w) = a2.get_webview_window("taskbar") {
+            let _ = w.show();
+        }
+        log("lockscreen: all bars restored");
     });
     log("lockscreen: unlocked");
     Ok(())
@@ -216,6 +233,30 @@ fn main_assert(app: &AppHandle) {
                 let _ = ShowWindow(hb, SW_HIDE);
                 log("lockscreen: hushbar parked for the lock");
             }
+        }
+        // Secondary bars too: they are TOPMOST on their own monitors, and
+        // the beat was re-raising them above the overlay — a live taskbar
+        // on a locked desktop is an unlocked desktop with extra steps.
+        let sec: Vec<isize> = {
+            let s = crate::util::lock_shared(&st.0);
+            s.sec_bars.iter().map(|b| b.hwnd).collect()
+        };
+        let mut parked = 0usize;
+        for id in sec {
+            if id == 0 {
+                continue;
+            }
+            let h = HWND(id as _);
+            if IsWindow(h).as_bool() && IsWindowVisible(h).as_bool() {
+                let _ = ShowWindow(h, SW_HIDE);
+                parked += 1;
+            }
+        }
+        if parked > 0 {
+            log(&format!(
+                "lockscreen: {} secondary bar(s) parked for the lock",
+                parked
+            ));
         }
     }
 }
