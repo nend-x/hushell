@@ -258,20 +258,32 @@ function wireCell(el, img, label) {
 
   el.addEventListener("pointermove", (e) => {
     if (!drag) return;
+    // The OLE modal loop owns the release and can swallow the pointerup —
+    // a drag still alive with no held button is a ghost. Kill it on the
+    // first buttonless move instead of hover-dragging the icon around.
+    if (!(e.buttons & 1)) {
+      for (const p of drag.parts) p.el.classList.remove("dragging");
+      drag = null;
+      return;
+    }
     const lead = drag.parts.find((p) => p.el === el) || drag.parts[0];
     if (!drag.moved && (Math.abs(e.clientX - lead.ax - lead.el.offsetLeft) > 2 || Math.abs(e.clientY - lead.ay - lead.el.offsetTop) > 2)) {
       drag.moved = true;
       for (const p of drag.parts) p.el.classList.add("dragging");
       // ONE icon only hands the drag to the native OLE pipeline (drag to
       // Explorer windows etc.). A multi-selection moves inside the desktop.
+      // The handoff does NOT stop the JS follow: the icon keeps tracking
+      // the cursor right here — the native drag_move stream (when it
+      // delivers) writes the exact same position (cursor minus grab
+      // offset), and the drop is re-homed by the boomerang Drop either
+      // way. Movement must never depend on the stream arriving.
       if (!drag.multi && !drag.handed) {
         drag.handed = true;
         oleDrag = { name: lead.name, space: drag.space };
         invoke("hushtop_dragout", { name: lead.name, dx: lead.ax, dy: lead.ay }).catch(() => {});
-        return;
       }
     }
-    if (!drag.moved || drag.handed) return;
+    if (!drag.moved) return;
     for (const p of drag.parts) {
       p.el.style.left = Math.round(e.clientX - p.ax) + "px";
       p.el.style.top = Math.round(e.clientY - p.ay) + "px";
@@ -283,8 +295,13 @@ function wireCell(el, img, label) {
     const d = drag;
     drag = null;
     for (const p of d.parts) p.el.classList.remove("dragging");
-    if (!d.moved || d.handed) return; // plain click or native-owned drag
+    if (!d.moved) return; // plain click — nothing to save
     if (!commit) return;
+    // A handed drag settles HERE too: the boomerang Drop re-homes the icon
+    // through cmd_move with the same top-left cell, and a double commit
+    // lands on that same cell — but when the native side never started
+    // (drag_out refused, OLE dead), this is the only thing that saves the
+    // position at all. Movement and persistence must not hinge on OLE.
     // Free placing: every icon lands EXACTLY on the cell it was dropped on
     // (collision -> nearest free, one motion, no re-sorting of anything else).
     const drops = d.parts.map((p) => {
