@@ -312,7 +312,13 @@ impl IDropTarget_Impl for HushtopDropTarget_Impl {
                     DROPPED_OWN.store(true, Ordering::SeqCst);
                     match name {
                         Some(n) => {
-                            let _ = hushtop::cmd_move(&self.app, n, cx, cy);
+                            // The stored cell must be the one the icon's
+                            // TOP-LEFT sits on (what the user saw all the way
+                            // down) — the cursor can be half an icon away,
+                            // and cell_of(cursor) silently re-homed drops
+                            // that looked perfectly placed.
+                            let (dx, dy) = DRAG_OFF.lock().map(|o| *o).unwrap_or((0, 0));
+                            let _ = hushtop::cmd_move(&self.app, n, cx - dx, cy - dy);
                             DROPEFFECT_MOVE
                         }
                         None => DROPEFFECT(0),
@@ -431,17 +437,22 @@ fn adopt_files(app: &AppHandle, files: &[String], cx: i32, cy: i32, want_move: b
     if landed.is_empty() {
         return 0;
     }
-    // Rescan brings the new names onto the grid, then each icon walks to
-    // the drop point (cmd_move re-homes on collision, one cell per file).
+    // The drop cells are SAVED before the rescan, so resolve_cells lands
+    // every adopted icon exactly at the drop point on its FIRST render —
+    // the old rescan-then-walk painted the first-free (sorted) spot and
+    // the drop-point move never emitted over it, so the icon visibly
+    // stayed sorted.
     {
         let st = app.state::<crate::AppShared>();
         let mut s = lock_shared(&st.0);
+        hushtop::stage_drop_cells(&mut s, &landed, cx, cy);
+        s.cfg.save();
         unsafe { hushtop::rescan(app, &mut s) };
     }
-    for (k, name) in landed.iter().enumerate() {
-        let _ = hushtop::cmd_move(app, name.clone(), cx + k as i32 * hushtop::CELL_W, cy);
-        log(&format!("dnd: adopted \"{name}\" at the drop point"));
-    }
+    log(&format!(
+        "dnd: adopted {} item(s) at the drop point",
+        landed.len()
+    ));
     landed.len()
 }
 
@@ -622,15 +633,12 @@ fn rehome_icon(app: &AppHandle, name: &str) {
     let st = app.state::<crate::AppShared>();
     let home = {
         let s = lock_shared(&st.0);
-        s.cfg.hushtop_positions.get(name).copied()
+        crate::hushtop::cell_of_name(&s, name)
+            .map(|(sp, cell)| crate::hushtop::cell_px_viewport(&s, sp, cell.0, cell.1))
     };
     let Some((ox, oy)) = home else { return };
     let _ = hushtop::cmd_move(app, name.to_string(), ox, oy);
-    let items = {
-        let s = lock_shared(&st.0);
-        s.hushtop_items.clone()
-    };
-    let _ = app.emit("hushtop:icons", &items);
+    hushtop::emit_spaces(app);
 }
 
 /// Recycle-bin delete (folders included). A raw remove_file/remove_dir_all
@@ -672,7 +680,7 @@ unsafe fn cleanup_drag(
                     Ok(()) => {
                         let st = app.state::<crate::AppShared>();
                         let mut s = lock_shared(&st.0);
-                        s.cfg.hushtop_positions.remove(name);
+                        hushtop::forget_name(&mut s, name);
                         s.cfg.save();
                         hushtop::rescan(app, &mut s);
                         log(&format!("dnd: \"{name}\" moved off the desktop (to the recycle bin)"));

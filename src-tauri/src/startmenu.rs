@@ -237,6 +237,7 @@ pub fn hide(app: &AppHandle) {
     std::thread::Builder::new()
         .name("startmenu-hide-fallback".into())
         .spawn(move || {
+            crate::util::register_thread("sm-hide-fb");
             std::thread::sleep(std::time::Duration::from_millis(400));
             if !MENU_OPEN.load(Ordering::SeqCst) {
                 hide_window_now(&a2);
@@ -834,21 +835,26 @@ fn read_pins_cfg(app: &AppHandle) -> Vec<String> {
 /// Auto-place: a count-based cascade down the paper, in GRID CELLS —
 /// columns cycle 2..6, one row further down per existing card. Cells, not
 /// pixels: the webview derives the position at render time, so the spawn
-/// spot is stable no matter the monitor or DPI.
-fn auto_widget_pos(app: &AppHandle) -> (i32, i32) {
+/// spot is stable no matter the monitor or DPI. Counts the TARGET space.
+fn auto_widget_pos(app: &AppHandle, space: usize) -> (i32, i32) {
     let st = app.state::<crate::AppShared>();
     let s = crate::util::lock_shared(&st.0);
-    let n = s.cfg.notepads.len() + s.cfg.widgets.len();
+    let sp = &s.cfg.spaces[space.min(1)];
+    let n = sp.notepads.len() + sp.widgets.len();
     (2 + (n % 5) as i32, 4 + n as i32)
 }
 
 pub fn add_widget(app: &AppHandle, kind: &str) -> Result<u32, String> {
-    let (col, row) = auto_widget_pos(app);
+    let a = {
+        let st = app.state::<crate::AppShared>();
+        let s = crate::util::lock_shared(&st.0);
+        s.cfg.active_space.min(1)
+    };
+    let (col, row) = auto_widget_pos(app, a);
     match kind {
-        "notes" => crate::hushtop::notepad_add(app, col, row),
-        "volume" | "clipboard" | "stats" | "lock" | "media" => {
-            crate::hushtop::widget_add(app, kind, col, row)
-        }
+        "notes" => crate::hushtop::notepad_add(app, col, row, a),
+        "volume" | "clipboard" | "stats" | "lock" | "media" | "spaces" | "brightness"
+        | "effects" => crate::hushtop::widget_add(app, kind, col, row, a),
         other => Err(format!("unknown widget kind '{other}'")),
     }
 }

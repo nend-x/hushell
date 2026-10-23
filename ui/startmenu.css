@@ -197,14 +197,14 @@ html, body {
   top: 21px;
   transform: rotate(45deg);
 }
-.glyph-controls i {
+.glyph-options i {
   border-radius: 50%;
   width: 8px;
   height: 8px;
 }
-.glyph-controls i:first-child { left: 3px; top: 3px; }
-.glyph-controls i:nth-child(2) { left: 21px; top: 3px; }
-.glyph-controls i:last-child { left: 12px; top: 20px; }
+.glyph-options i:first-child { left: 3px; top: 3px; }
+.glyph-options i:nth-child(2) { left: 21px; top: 3px; }
+.glyph-options i:last-child { left: 12px; top: 20px; }
 .glyph-pinned i {
   border-radius: 1px;
   width: 12px;
@@ -361,9 +361,9 @@ html, body {
 }
 .hidden { display: none; }
 
-/* ---------- controls ---------- */
+/* ---------- options ---------- */
 
-#controls-scroll {
+#options-scroll {
   flex: 1;
   overflow-y: auto;
   overflow-x: hidden;
@@ -577,22 +577,519 @@ html, body {
 /* ---------- scrollbars (custom, shell-wide language) ---------- */
 
 #results::-webkit-scrollbar,
-#controls-scroll::-webkit-scrollbar,
+#options-scroll::-webkit-scrollbar,
 #pinned-scroll::-webkit-scrollbar {
   width: 8px;
 }
 #results::-webkit-scrollbar-track,
-#controls-scroll::-webkit-scrollbar-track,
+#options-scroll::-webkit-scrollbar-track,
 #pinned-scroll::-webkit-scrollbar-track {
   background: transparent;
 }
 #results::-webkit-scrollbar-thumb,
-#controls-scroll::-webkit-scrollbar-thumb,
+#options-scroll::-webkit-scrollbar-thumb,
 #pinned-scroll::-webkit-scrollbar-thumb {
   background: var(--stroke-soft);
 }
 #results::-webkit-scrollbar-thumb:hover,
-#controls-scroll::-webkit-scrollbar-thumb:hover,
+#options-scroll::-webkit-scrollbar-thumb:hover,
 #pinned-scroll::-webkit-scrollbar-thumb:hover {
   background: var(--stroke);
+}
+
+/* ---------- third tab: the widget gallery ---------------------------------- */
+
+.glyph-widgets i {
+  border-radius: 0 !important;
+}
+.glyph-widgets i:nth-child(1) { width: 13px; height: 13px; left: 2px; top: 2px; }
+.glyph-widgets i:nth-child(2) { width: 13px; height: 13px; left: 19px; top: 2px; }
+.glyph-widgets i:nth-child(3) { width: 13px; height: 13px; left: 2px; top: 19px; }
+.glyph-widgets i:nth-child(4) { width: 13px; height: 13px; left: 19px; top: 19px; }
+
+#widgets-scroll {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+#wg-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+#wg-hint {
+  margin-top: 12px;
+  font-size: 11px;
+  letter-spacing: 0.6px;
+  color: var(--ink-2);
+  text-align: center;
+}
+.wgcard {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  background: transparent;
+  border: 1px solid var(--stroke);
+  padding: 12px 12px 10px;
+  cursor: grab;
+  font-family: inherit;
+  text-align: left;
+  color: var(--ink);
+}
+.wgcard:hover {
+  background: var(--ink);
+  color: var(--invert-ink);
+  outline: none;
+}
+.wgcard:active {
+  cursor: grabbing;
+}
+.wg-name {
+  font-size: 13.5px;
+  font-weight: 600;
+  letter-spacing: 0.3px;
+}
+.wg-desc {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--ink-2);
+}
+.wgcard:hover .wg-desc {
+  color: var(--invert-ink);
+  opacity: 0.65;
+}
+
+/* ---- gallery previews: the REAL widget body ------------------------------
+   Each card hosts a .wprev — a real widget card (the exact DOM hushtop
+   renders) scaled to the column. The body rules below are the hushtop.css
+   widget styles ported under the .wprev scope, so a preview can never leak
+   into the rest of the menu. Nothing here is interactive: pointer-events
+   off, every control disabled — the card is the only drag surface.
+
+   The card is OUT OF FLOW (absolute in its fit box): transform: scale()
+   never shrinks layout, so an in-flow 288px media card used to inflate its
+   grid track's min-content — the column grew to the card's natural width,
+   the fit measured that inflated width, and the scale settled at 1 forever
+   (media/brightness read "too wide" and clipped at the menu edge). Out of
+   flow, the 1fr tracks size on their own and the scale is real. */
+.wprev-fit {
+  display: block;
+  position: relative;
+  width: 100%;
+  overflow: hidden;
+}
+.wprev {
+  position: absolute;
+  top: 0;
+  left: 0;
+  --track: var(--stroke-soft);
+  --stroke-dash: var(--stroke-soft);
+  --media-play-bg: #4a4a52;
+  display: flex;
+  flex-direction: column;
+  box-sizing: border-box;
+  overflow: hidden;
+  background: var(--paper);
+  border: 1px solid var(--stroke);
+  transform-origin: 0 0;
+  pointer-events: none;
+}
+.wprev * {
+  pointer-events: none;
+}
+.wprev.media {
+  padding: 0;
+}
+.wprev.lock {
+  padding: 0;
+}
+
+.wprev textarea {
+  flex: 1;
+  resize: none;
+  border: 0;
+  outline: none;
+  background: transparent;
+  padding: 8px 10px;
+  font: 12.5px/1.5 "Geist", "Segoe UI", system-ui, sans-serif;
+  color: var(--ink);
+}
+
+.wprev .vol-slider {
+  -webkit-appearance: none;
+  appearance: none;
+  width: 100%;
+  height: 16px;
+  margin: 0;
+  background: transparent;
+  cursor: default;
+}
+.wprev .vol-slider::-webkit-slider-runnable-track {
+  height: 3px;
+  background: var(--track);
+  border-radius: 0;
+}
+.wprev .vol-slider::-webkit-slider-thumb {
+  -webkit-appearance: none;
+  width: 13px;
+  height: 13px;
+  margin-top: -5px;
+  background: var(--ink);
+  border: 0;
+  border-radius: 0;
+}
+.wprev .vol-slider.vol-main { margin: 4px 12px 0; width: calc(100% - 24px); }
+.wprev .vol-readout {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 10px 12px 2px;
+}
+.wprev .vol-pct {
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.3px;
+  color: var(--ink);
+}
+.wprev .vol-state {
+  font-size: 9px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  flex: 1;
+  text-align: right;
+}
+.wprev .vol-ruler {
+  height: 5px;
+  margin: 2px 12px 0;
+  background: repeating-linear-gradient(
+    to right,
+    var(--track) 0,
+    var(--track) 1px,
+    transparent 1px,
+    transparent 10%
+  );
+  border-right: 1px solid var(--track);
+}
+.wprev .vol-foot {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px 10px;
+}
+.wprev .vol-flex { flex: 1; }
+.wprev .vol-btn {
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font: 600 9.5px/1 "Geist", "Segoe UI", system-ui, sans-serif;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  padding: 5px 9px;
+  cursor: default;
+}
+.wprev .vol-mute.is-muted { background: var(--ink); color: var(--paper); }
+.wprev .vol-arrow .chev { display: inline-block; margin-left: 4px; }
+.wprev .br-sun {
+  color: var(--ink);
+  display: inline-flex;
+}
+.wprev .br-slider:disabled { opacity: 1; }
+.wprev .br-ruler {
+  background: repeating-linear-gradient(
+    to right,
+    var(--track) 0,
+    var(--track) 1px,
+    transparent 1px,
+    transparent 5%
+  );
+}
+
+.wprev .st-rows {
+  padding: 10px 14px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  overflow: hidden;
+}
+.wprev .st-row { display: flex; flex-direction: column; gap: 4px; }
+.wprev .st-head {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  font-size: 10px;
+  letter-spacing: 0.4px;
+}
+.wprev .st-label {
+  color: var(--ink-2);
+  text-transform: uppercase;
+  font-weight: 600;
+}
+.wprev .st-pct {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+.wprev .st-track {
+  height: 3px;
+  background: var(--stroke-soft);
+  border-radius: 0;
+  overflow: hidden;
+}
+.wprev .st-fill {
+  height: 100%;
+  background: var(--ink);
+  border-radius: 0;
+}
+
+.wprev .cb-list {
+  flex: 1;
+  overflow: hidden;
+}
+.wprev .cb-tile {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 8px 10px 0;
+  padding: 7px 9px;
+  background: var(--field);
+  border: 1px solid var(--stroke-soft);
+  color: var(--ink);
+  font: 11.5px/1.45 "Geist", "Segoe UI", system-ui, sans-serif;
+  text-align: left;
+  cursor: default;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+}
+.wprev .cb-tile:last-child { margin-bottom: 10px; }
+
+.wprev .lock-btn {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  padding: 0;
+  padding-bottom: 6px;
+}
+.wprev .lock-glyph {
+  position: relative;
+  width: 22px;
+  height: 29px;
+  display: block;
+}
+.wprev .lock-glyph .shackle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 14px;
+  height: 12px;
+  border: 2px solid var(--ink);
+  border-bottom: none;
+  border-radius: 7px 7px 0 0;
+}
+.wprev .lock-glyph .body {
+  position: absolute;
+  top: 10px;
+  left: 0;
+  width: 22px;
+  height: 17px;
+  background: var(--ink);
+}
+.wprev .lock-glyph .keyhole {
+  position: absolute;
+  top: 16px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 7px;
+  background: var(--paper);
+}
+
+.wprev .media-top {
+  display: flex;
+  height: 84px;
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--stroke-soft);
+}
+.wprev .media-cover-wrap {
+  position: relative;
+  width: 84px;
+  height: 84px;
+  flex: 0 0 auto;
+  overflow: hidden;
+  border-right: 1px solid var(--stroke-soft);
+  background: var(--field);
+}
+.wprev .media-cover {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  filter: grayscale(1) contrast(1.04);
+}
+.wprev .media-meta {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 12px 12px 9px 11px;
+}
+.wprev .media-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wprev .media-artist {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink-2);
+  margin-top: 3px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wprev .media-status {
+  margin-top: auto;
+  display: flex;
+  align-items: center;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  color: var(--ink-2);
+}
+.wprev .media-band {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+}
+.wprev .media-transport {
+  flex: 0 0 112px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+}
+.wprev .media-btn {
+  width: 30px;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink-2);
+}
+.wprev .media-btn svg { display: block; }
+.wprev .media-btn.play {
+  width: 34px;
+  height: 34px;
+  background: var(--media-play-bg);
+  color: #f7f5ee;
+}
+.wprev .media-viz-sep {
+  width: 1px;
+  align-self: stretch;
+  background: var(--stroke-soft);
+  flex: 0 0 auto;
+}
+.wprev .media-viz {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  padding: 8px 10px 0 11px;
+}
+.wprev .media-viz i {
+  flex: 0 0 5px;
+  width: 5px;
+  height: 3px;
+  background: var(--ink-2);
+}
+
+.wprev .fx-row {
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px 4px;
+}
+.wprev .fx-btn {
+  flex: 1;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  padding: 0;
+}
+.wprev .fx-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+/* the leaf glyph's veins — same cut-out as the live widget */
+.wprev .fx-btn .lv {
+  stroke: var(--paper);
+}
+.wprev .fx-btn.active .lv {
+  stroke: var(--ink);
+}
+.wprev .fx-cap {
+  padding: 2px 12px 9px;
+  font-size: 9px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+.wprev .sp-seg {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  flex: 1;
+  align-items: stretch;
+}
+.wprev .sp-btn {
+  flex: 1;
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font: 700 15px/1 "Geist", "Segoe UI", system-ui, sans-serif;
+  padding: 8px 0;
+}
+.wprev .sp-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* the same flat scrollbar vocabulary as the other scrolls */
+#widgets-scroll::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+#widgets-scroll::-webkit-scrollbar-track {
+  background: transparent;
+}
+#widgets-scroll::-webkit-scrollbar-thumb {
+  background: var(--stroke-soft);
+  border: 3px solid var(--paper);
+}
+#widgets-scroll::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-2);
+}
+#widgets-scroll::-webkit-scrollbar-corner {
+  background: transparent;
 }

@@ -83,23 +83,38 @@ pub fn start(app: AppHandle) {
     let la = app.clone();
     std::thread::Builder::new()
         .name("media-watch".into())
-        .spawn(move || watch_loop(app))
+        .spawn(move || {
+            crate::util::register_thread("media-watch");
+            watch_loop(app);
+        })
         .expect("media watch thread");
     std::thread::Builder::new()
         .name("media-levels".into())
-        .spawn(move || levels_loop(la))
+        .spawn(move || {
+            crate::util::register_thread("media-levels");
+            levels_loop(la);
+        })
         .expect("media levels thread");
     log("media: engines started (smtc watcher + visualizer capture)");
 }
 
+/// Recompute the demand flag from a state reference the caller already
+/// holds. Callers that own the shared lock MUST use this — `set_wants_levels`
+/// would try to re-lock the same non-reentrant Mutex on the calling thread
+/// and deadlock it (the dropped-widget freeze + crash).
+pub fn set_wants_levels_sync(s: &crate::shared::Shared) {
+    let want = s
+        .cfg
+        .spaces
+        .iter()
+        .any(|sp| sp.widgets.iter().any(|w| w.kind == "media"));
+    WANTS_LEVELS.store(want, Ordering::Relaxed);
+}
+
 pub fn set_wants_levels(app: &AppHandle) {
     let st = app.state::<crate::AppShared>();
-    let want = crate::util::lock_shared(&st.0)
-        .cfg
-        .widgets
-        .iter()
-        .any(|w| w.kind == "media");
-    WANTS_LEVELS.store(want, Ordering::Relaxed);
+    let s = crate::util::lock_shared(&st.0);
+    set_wants_levels_sync(&s);
 }
 
 // ---------------------------------------------------------------------------

@@ -92,6 +92,34 @@ pub struct HushtopItem {
     pub y: i32,
 }
 
+/// A monitor region in CSS px, relative to the hushtop viewport (which
+/// spans the whole virtual screen).
+#[derive(Serialize, Clone, Debug, Default)]
+pub struct MonCss {
+    pub x: i32,
+    pub y: i32,
+    pub w: i32,
+    pub h: i32,
+}
+
+/// The desktop as the webview should draw it: one entry per space (items),
+/// the per-monitor regions (CSS px) and whether TWO displays split the
+/// spaces (dual) or a single display shows only the ACTIVE one.
+#[derive(Clone, Default)]
+pub struct HushtopView {
+    pub dual: bool,
+    pub active: usize,
+    pub monitors: Vec<MonCss>,
+    /// items[space] — the resolved (viewport-absolute px) icon list.
+    pub items: Vec<Vec<HushtopItem>>,
+}
+
+impl HushtopView {
+    pub fn items_of(&self, space: usize) -> &[HushtopItem] {
+        self.items.get(space).map(|v| v.as_slice()).unwrap_or(&[])
+    }
+}
+
 #[derive(Serialize, Clone)]
 pub struct PreviewSlot {
     pub id: isize,
@@ -150,7 +178,7 @@ pub struct Shared {
     pub hushtop_applied: bool,
     pub hushtop_icons_hidden: bool,
     pub hushtop_scan_sig: u64,
-    pub hushtop_items: Vec<HushtopItem>,
+    pub hushtop_spaces: HushtopView,
     pub hushtop_icon_cache: HashMap<String, (u64, String, Option<String>)>,
     pub hushtop_menu_fg: isize,
     pub hushtop_rebuild_queued: bool,
@@ -167,6 +195,11 @@ pub struct Shared {
     pub hushtop_reapply_queued: bool,
     pub hushtop_dance_cooldown: u32,
     pub ogbar_released: bool,
+
+    /// Top-level windows THIS shell minimized at lock time (the boot sweep
+    /// deliberately stores nothing — boot cleanup is not a lock). A verified
+    /// unlock restores exactly these, and only the still-iconic ones.
+    pub lock_minimized: Vec<isize>,
 
     pub bar: Rc,
 
@@ -255,7 +288,7 @@ impl Shared {
             hushtop_applied: false,
             hushtop_icons_hidden: false,
             hushtop_scan_sig: 0,
-            hushtop_items: Vec::new(),
+            hushtop_spaces: HushtopView::default(),
             hushtop_icon_cache: HashMap::new(),
             hushtop_menu_fg: 0,
             hushtop_rebuild_queued: false,
@@ -272,6 +305,7 @@ impl Shared {
             hushtop_reapply_queued: false,
             hushtop_dance_cooldown: 0,
             ogbar_released: false,
+            lock_minimized: Vec::new(),
             bar: Rc::default(),
             cfg: Config::load(),
             tasks: Vec::new(),

@@ -64,6 +64,7 @@ listen("startmenu:hide", () => {
     const ae = document.activeElement;
     if (ae && ae !== document.body) ae.blur();
   } catch (e) { /* nothing */ }
+  cancelWgDrag();
   hideMenu();
   resetToLanding();
   sheet.classList.remove("in");
@@ -73,11 +74,12 @@ listen("startmenu:hide", () => {
   }, 170);
 }).catch(() => {});
 
-// ---------- views / search / controls / pinned ----------
+// ---------- views / search / options / widgets ----------
 const views = {
   landing: document.getElementById("view-landing"),
   search: document.getElementById("view-search"),
-  controls: document.getElementById("view-controls"),
+  options: document.getElementById("view-options"),
+  widgets: document.getElementById("view-widgets"),
   pinned: document.getElementById("view-pinned"),
 };
 
@@ -99,7 +101,7 @@ function resetToLanding() {
   paintResults();
   hintEl.classList.add("hidden");
   for (const k of Object.keys(views)) {
-    const sc = views[k].querySelector("#controls-scroll, #pinned-scroll, #results");
+    const sc = views[k].querySelector("#options-scroll, #pinned-scroll, #results");
     if (sc) sc.scrollTop = 0;
   }
 }
@@ -114,15 +116,17 @@ function showView(name) {
     input.focus();
     input.select();
     runSearch(input.value);
-  } else if (name === "controls") {
-    syncControls();
+  } else if (name === "options") {
+    syncOptions();
+  } else if (name === "widgets") {
+    fitWgPreviews();
   }
 }
 
 document.getElementById("box-search").addEventListener("click", () => showView("search"));
-document.getElementById("box-controls").addEventListener("click", () => showView("controls"));
-document.getElementById("box-pinned").addEventListener("click", () => showView("pinned"));
-for (const id of ["search-back", "controls-back", "pinned-back"]) {
+document.getElementById("box-options").addEventListener("click", () => showView("options"));
+document.getElementById("box-widgets").addEventListener("click", () => showView("widgets"));
+for (const id of ["search-back", "options-back", "widgets-back", "pinned-back"]) {
   document.getElementById(id).addEventListener("click", () => showView("landing"));
 }
 
@@ -217,7 +221,7 @@ input.addEventListener("keydown", (e) => {
   }
 });
 
-// ---------- controls ----------
+// ---------- options ----------
 
 const lockpwInput = document.getElementById("lockpw-input");
 const lockpwState = document.getElementById("lockpw-state");
@@ -249,9 +253,10 @@ lockpwInput.addEventListener("keydown", (e) => {
   }
 });
 
-function syncControls() {
+function syncOptions() {
   syncLockPassword();
   syncLockHotkey();
+  syncLockBurn();
   syncStartup();
 }
 
@@ -275,6 +280,30 @@ swLockHotkey.addEventListener("click", () => {
   swLockHotkey.classList.toggle("on", lockHotkeyOn);
   lockHotkeyState.textContent = lockHotkeyOn ? "alt + l" : "off";
   invoke("lock_hotkey_set", { on: lockHotkeyOn }).catch(() => {});
+});
+
+// ---------- lock-screen burn shield switch (OLED protection) -------------
+
+const swLockBurn = document.getElementById("sw-lockburn");
+const lockBurnState = document.getElementById("lockburn-state");
+let lockBurnOn = true;
+
+function syncLockBurn() {
+  invoke("lock_burn_get")
+    .then((on) => {
+      lockBurnOn = !!on;
+      swLockBurn.classList.toggle("on", lockBurnOn);
+      lockBurnState.textContent = lockBurnOn ? "lock screen · 1 min idle" : "off";
+    })
+    .catch(() => {});
+}
+
+swLockBurn.addEventListener("click", () => {
+  lockBurnOn = !lockBurnOn;
+  // instant local flip — the page never waits for the round trip
+  swLockBurn.classList.toggle("on", lockBurnOn);
+  lockBurnState.textContent = lockBurnOn ? "lock screen · 1 min idle" : "off";
+  invoke("lock_burn_set", { on: lockBurnOn }).catch(() => {});
 });
 
 // ---------- startup switch (shell:startup self-registration) ----------
@@ -310,20 +339,158 @@ document.getElementById("row-fresh").addEventListener("click", () => {
   invoke("hushtop_prompt_show", { mode: "fresh", name: "" }).catch(() => {});
 });
 
-for (const btn of document.querySelectorAll(".wbtn")) {
-  btn.addEventListener("click", () => {
-    invoke("startmenu_add_widget", { kind: btn.dataset.kind })
-      .then(() => {
-        btn.classList.add("ok");
-        const old = btn.textContent;
-        btn.textContent = "Added";
-        setTimeout(() => {
-          btn.classList.remove("ok");
-          btn.textContent = old;
-        }, 900);
-      })
-      .catch(() => {});
-  });
+// ---------- the widget gallery (third tab) — press, drag out, drop ----------
+
+const WIDGETS = [
+  { kind: "notes", name: "Notes", desc: "a paper card for quick thoughts" },
+  { kind: "volume", name: "Volume", desc: "master + per-program mixer" },
+  { kind: "clipboard", name: "Clipboard", desc: "everything you copied, ready to paste" },
+  { kind: "stats", name: "System stats", desc: "cpu, memory and battery at a glance" },
+  { kind: "lock", name: "Lock", desc: "one press locks the shell" },
+  { kind: "media", name: "Media", desc: "now playing, transport and levels" },
+  { kind: "spaces", name: "Second desktop", desc: "swap between two desktop spaces" },
+  { kind: "brightness", name: "Brightness", desc: "talks to the monitor's backlight" },
+  { kind: "effects", name: "Effects", desc: "some effects for your desktop" },
+];
+
+// The gallery previews are the REAL widget bodies (hushWidgetPreview — the
+// same DOM the desktop renders), scaled down to the card. No hand-drawn
+// mocks exist anywhere anymore.
+function wgPreviewBox(kind) {
+  const fit = document.createElement("span");
+  fit.className = "wprev-fit";
+  const card = document.createElement("span");
+  card.className = "wprev wprev-" + kind;
+  card.dataset.kind = kind;
+  // the widget's REAL box — the body lays out inside it exactly as it does
+  // on the desktop (the lock button, for one, only fills a sized card)
+  const [nw, nh] = hushWidgetDims(kind);
+  card.style.width = nw + "px";
+  card.style.height = nh + "px";
+  card.appendChild(hushWidgetPreview(kind));
+  fit.appendChild(card);
+  return fit;
+}
+
+// Scale every preview to its card's content width. Measured lazily on the
+// first show of the widgets tab — the view is display:none until then and a
+// hidden node measures 0. Retries on every tab switch until all measured.
+let wgPrevFitted = false;
+function fitWgPreviews() {
+  if (wgPrevFitted) return;
+  const fits = [...wgGrid.querySelectorAll(".wprev-fit")];
+  let all = fits.length > 0;
+  for (const fit of fits) {
+    const card = fit.firstChild;
+    if (!card) {
+      all = false;
+      continue;
+    }
+    const [nw, nh] = hushWidgetDims(card.dataset.kind);
+    const w = fit.clientWidth;
+    if (!w) {
+      all = false;
+      continue;
+    }
+    // Miniatures, not 1:1 cards: every preview lands at most ~78% of its
+    // column (media 288px used to render full size and clip at the menu
+    // edge). The absolute card centers in the fit box at the scaled width.
+    const s = Math.min(1, (w * 0.78) / nw);
+    card.style.transform = "scale(" + s + ")";
+    card.style.left = Math.round((w - nw * s) / 2) + "px";
+    fit.style.height = Math.round(nh * s) + "px";
+  }
+  if (all) wgPrevFitted = true;
+}
+
+const wgGrid = document.getElementById("wg-grid");
+for (const w of WIDGETS) {
+  const card = document.createElement("button");
+  card.className = "wgcard";
+  card.dataset.kind = w.kind;
+  const prev = wgPreviewBox(w.kind);
+  prev.dataset.kind = w.kind;
+  card.appendChild(prev);
+  const nm = document.createElement("span");
+  nm.className = "wg-name";
+  nm.textContent = w.name;
+  const ds = document.createElement("span");
+  ds.className = "wg-desc";
+  ds.textContent = w.desc;
+  card.appendChild(nm);
+  card.appendChild(ds);
+  wgGrid.appendChild(card);
+}
+
+// The drag-out: pointer capture rides the card; every move streams to the
+// native side (which translates start-menu client px -> desktop px and
+// feeds the hushtop ghost); release lands the widget (or cancels off-paper).
+let wgDrag = null;
+
+wgGrid.addEventListener("pointerdown", (e) => {
+  const card = e.target.closest(".wgcard");
+  if (!card || e.button !== 0) return;
+  card.setPointerCapture(e.pointerId);
+  wgDrag = { kind: card.dataset.kind, started: false, sx: e.clientX, sy: e.clientY, last: 0 };
+});
+
+wgGrid.addEventListener("pointermove", (e) => {
+  if (!wgDrag) return;
+  if (!wgDrag.started) {
+    if (Math.abs(e.clientX - wgDrag.sx) < 5 && Math.abs(e.clientY - wgDrag.sy) < 5) return;
+    wgDrag.started = true;
+  }
+  const now = performance.now();
+  if (now - wgDrag.last < 40) return;
+  wgDrag.last = now;
+  // remember the newest release point — a lost capture (window hidden,
+  // capture yanked) has no pointerup, and the drop still needs coordinates
+  wgDrag.lx = e.clientX;
+  wgDrag.ly = e.clientY;
+  invoke("widget_drag_move", { kind: wgDrag.kind, cx: e.clientX, cy: e.clientY }).catch(() => {});
+});
+
+const wgDragEnd = (ok) => {
+  if (!wgDrag) return;
+  const d = wgDrag;
+  wgDrag = null;
+  if (!ok || !d.started) {
+    if (d.started) invoke("widget_drag_cancel").catch(() => {});
+    return;
+  }
+  // the release point lands (or cancels) — the native side owns the verdict
+  invoke("widget_drag_drop", { kind: d.kind, cx: d.lx ?? d.sx, cy: d.ly ?? d.sy })
+    .catch(() => invoke("widget_drag_cancel").catch(() => {}));
+};
+
+wgGrid.addEventListener("pointerup", (e) => {
+  if (wgDrag) {
+    wgDrag.lx = e.clientX;
+    wgDrag.ly = e.clientY;
+  }
+  wgDragEnd(true);
+});
+wgGrid.addEventListener("pointercancel", () => wgDragEnd(false));
+// Capture lost WITHOUT pointerup/cancel (the window hid mid-drag, WebView2
+// yanked the capture): end the drag here or the ghost would ride forever.
+// After a normal release this fires with wgDrag already null — a no-op.
+for (const c of wgGrid.querySelectorAll(".wgcard")) {
+  c.addEventListener("lostpointercapture", () => wgDragEnd(true));
+}
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && wgDrag && wgDrag.started) {
+    wgDragEnd(false);
+  }
+});
+
+// The menu is going away while a drag is live: no pointer event will ever
+// arrive — cancel the ghost explicitly (a stuck ghost would sit on the
+// desktop forever).
+function cancelWgDrag() {
+  if (!wgDrag) return;
+  const d = wgDrag;
+  wgDrag = null;
+  if (d.started) invoke("widget_drag_cancel").catch(() => {});
 }
 
 document.getElementById("row-shutdown").addEventListener("click", () => {

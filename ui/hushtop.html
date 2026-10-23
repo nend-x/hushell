@@ -1,19 +1,39 @@
 <!doctype html>
-<html lang="en">
+<!-- dark from the very first frame: the webview's own pre-CSS paint is
+     this color, never white — no launch flash before the stylesheet lands -->
+<html lang="en" style="background: #1b1b1f">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>hushell-hushtop</title>
   <link rel="stylesheet" href="hushtop.css" />
 </head>
-<body>
+<!-- class="boot" is pre-paint state: the dark veil covers the sheet and the
+     ruled lines stay hidden from the very first frame — the sweep reveals
+     them (hushtop.js re-adds it, a no-op, for clarity) -->
+<body class="boot">
   <div id="paper">
+    <!-- the desktop's own horizontal ruled lines, on a dedicated layer so
+         the lock/boot sweep can erase and reveal them with the line -->
+    <div id="rules" aria-hidden="true"></div>
+    <!-- the effects BACK layer: the wind farm's landscape paints here, below
+         the icons/widgets — wallpaper, never a cover for the user's stuff -->
+    <canvas id="fxback" aria-hidden="true"></canvas>
+    <div id="veil" aria-hidden="true"></div>
     <div id="icons"></div>
     <div id="notepads"></div>
     <div id="widgets"></div>
+    <div id="icons-next"></div>
+    <div id="wipe-line"></div>
+    <div id="ghost"></div>
+    <canvas id="fx"></canvas>
+    <div id="marquee"></div>
     <div id="menu" class="hidden"></div>
+    <div id="sort-menu" class="hidden"></div>
   </div>
   <script src="theme.js"></script>
+  <script src="fx.js"></script>
+  <script src="wpreview.js"></script>
   <script src="hushtop.js"></script>
 </body>
 </html>

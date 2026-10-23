@@ -1,12 +1,19 @@
 //! Config persistence (%APPDATA%\hushell\config.json).
 //!
 //! Schema rules (owner directive — NO backward compatibility):
+//!   * the desktop has TWO spaces (the second-desktop widget swaps between
+//!     them); every space owns its own cards and its own ICON SET — desktop 2
+//!     starts EMPTY and only holds what is dropped/created/moved onto it
+//!     (the icons-per-space split; the one-time migration wipes the old
+//!     duplicated desktop-2 map);
 //!   * a card's spot is its GRID CELL (col, row) — col steps 36px, row steps
 //!     18px, both anchored at 14px (the same cadence hushtop.js snaps to);
 //!   * a card's SIZE is whole cells too: w is a multiple of 36, h of 18, so
 //!     every card fits exactly box-to-box on the ruled sheet. load() snaps
 //!     fractional sizes up (7.7 boxes -> 8) — the card gets bigger, never
 //!     smaller, and content can never clip;
+//!   * an icon's spot is a CELL too — free placing: cells are written only
+//!     by drops, adds and explicit sorts, never by a refresh;
 //!   * legacy pixel fields are gone; a config that does not parse under the
 //!     current schema, or carries invalid records, resets to the default
 //!     config (which is then written to disk).
@@ -47,18 +54,44 @@ pub struct HushWidget {
     pub h: i32,
 }
 
+/// One desktop space. The shell carries exactly two (the second-desktop
+/// widget swaps between them); each space arranges the SAME desktop files
+/// independently and holds its own cards.
+#[derive(Serialize, Deserialize, Clone, Default)]
+pub struct Space {
+    #[serde(default)]
+    pub notepads: Vec<Notepad>,
+    #[serde(default)]
+    pub widgets: Vec<HushWidget>,
+    /// Free-placed icon spots: name -> grid cell (col, row) within the
+    /// space's region. Written by drops / new files / explicit sorts only.
+    #[serde(default)]
+    pub icon_cells: HashMap<String, (i32, i32)>,
+}
+
 #[derive(Serialize, Deserialize, Clone)]
 pub struct Config {
     pub recolor_icons: bool,
     pub hide_native_taskbar: bool,
     #[serde(default)]
-    pub hushtop_positions: HashMap<String, (i32, i32)>,
-    #[serde(default)]
     pub hushtop_hid_icons: bool,
+    /// The two desktop spaces. Index 0 = space 1 (the switcher's left
+    /// button), index 1 = space 2.
+    #[serde(default = "default_spaces")]
+    pub spaces: [Space; 2],
+    /// The space a single-display desktop shows (0 or 1). Meaningless while
+    /// two displays are connected — each monitor then hosts its own space.
     #[serde(default)]
-    pub notepads: Vec<Notepad>,
+    pub active_space: usize,
+    /// Icons are PER-SPACE (desktop 2 starts empty). A config from before
+    /// the split carries the same names mapped in BOTH spaces — load()
+    /// clears desktop 2's map once and flips this to true.
     #[serde(default)]
-    pub widgets: Vec<HushWidget>,
+    pub icons_split: bool,
+    /// The desktop effects widget's current layer:
+    /// "none" | "snow" | "leaves" | "star" (wind lives on the lock screen only).
+    #[serde(default)]
+    pub effect: String,
     #[serde(default)]
     pub clipboard_history: Vec<String>,
     #[serde(default)]
@@ -69,6 +102,11 @@ pub struct Config {
     pub lock_hash: String,
     #[serde(default = "default_true")]
     pub lock_hotkey: bool,
+    /// The lock screen's OLED burn shield (full-black frame after a minute
+    /// of lock-screen silence; keyboard wakes, mouse does not). The options
+    /// switch turns it off entirely.
+    #[serde(default = "default_true")]
+    pub lock_burn: bool,
     /// Run at startup — the shell drops a .lnk for itself into the user's
     /// Startup folder (shell:startup) when on, removes it when off.
     #[serde(default = "default_true")]
@@ -79,20 +117,26 @@ fn default_true() -> bool {
     true
 }
 
+fn default_spaces() -> [Space; 2] {
+    [Space::default(), Space::default()]
+}
+
 impl Default for Config {
     fn default() -> Self {
         Config {
             recolor_icons: true,
             hide_native_taskbar: true,
-            hushtop_positions: HashMap::new(),
             hushtop_hid_icons: false,
-            notepads: Vec::new(),
-            widgets: Vec::new(),
+            spaces: default_spaces(),
+            active_space: 0,
+            icons_split: false,
+            effect: String::new(),
             clipboard_history: Vec::new(),
             pinned: Vec::new(),
             lock_salt: String::new(),
             lock_hash: String::new(),
             lock_hotkey: true,
+            lock_burn: true,
             startup: true,
         }
     }
@@ -155,6 +199,7 @@ impl Config {
                 match serde_json::from_str::<Config>(&txt) {
                     Ok(mut c) => {
                         if c.normalize() {
+                            c.migrate_icons_per_space();
                             return c;
                         }
                         log("config: invalid record(s) — resetting to the default config");
@@ -167,8 +212,11 @@ impl Config {
         }
         // No backward compatibility: an unparsable or invalid config resets
         // to defaults, and the default is persisted right away so the file
-        // on disk always matches the current schema.
-        let d = Config::default();
+        // on disk always matches the current schema. A fresh default IS the
+        // per-space schema — mark it migrated so no wipe logic ever runs on
+        // it later.
+        let mut d = Config::default();
+        d.icons_split = true;
         d.save();
         d
     }
@@ -178,13 +226,65 @@ impl Config {
     /// config to default (owner rule: an incorrect config never limps along).
     fn normalize(&mut self) -> bool {
         let mut ok = true;
-        for n in &mut self.notepads {
-            ok &= valid_cell(n.col, n.row) && snap_dims(&mut n.w, &mut n.h);
+        for sp in &mut self.spaces {
+            for n in &mut sp.notepads {
+                ok &= valid_cell(n.col, n.row) && snap_dims(&mut n.w, &mut n.h);
+            }
+            for w in &mut sp.widgets {
+                ok &= valid_cell(w.col, w.row) && snap_dims(&mut w.w, &mut w.h);
+            }
+            for (_, &(c, r)) in sp.icon_cells.iter() {
+                ok &= valid_cell(c, r);
+            }
         }
-        for w in &mut self.widgets {
-            ok &= valid_cell(w.col, w.row) && snap_dims(&mut w.w, &mut w.h);
-        }
+        ok &= self.active_space <= 1;
+        ok &= matches!(
+            self.effect.as_str(),
+            // "rain" still parses (a legacy stored value) — it renders as
+            // none; dropping it from the whitelist would reset the WHOLE
+            // config over a retired string. Same for "wind": the farm moved
+            // to the lock screen, a stale stored value renders as none.
+            "" | "none" | "snow" | "leaves" | "star" | "wind" | "rain"
+        );
         ok
+    }
+
+    /// One-time migration to per-space icons. A PRE-SPLIT config mapped
+    /// EVERY desktop name in BOTH spaces (the old build_spaces resolved all
+    /// names twice) — that duplicated desktop-2 map is wiped once; desktop 1
+    /// keeps everything. A config written by the PER-SPACE build already
+    /// holds single ownership, so its desktop-2 map must survive: the wipe
+    /// only fires when every desktop-2 name is also mapped on desktop 1
+    /// (the duplication signature). Runs right after a valid parse, before
+    /// the desktop is ever built.
+    fn migrate_icons_per_space(&mut self) {
+        if self.icons_split {
+            return;
+        }
+        // Every desktop-2 name ALSO on desktop 1 = the old duplicated map.
+        let duplicated = !self.spaces[1].icon_cells.is_empty()
+            && self
+                .spaces[1]
+                .icon_cells
+                .keys()
+                .all(|n| self.spaces[0].icon_cells.contains_key(n));
+        let wiped = if duplicated {
+            self.spaces[1].icon_cells.len()
+        } else {
+            0
+        };
+        if duplicated {
+            self.spaces[1].icon_cells.clear();
+        }
+        self.icons_split = true;
+        self.save();
+        if duplicated {
+            log(&format!(
+                "config: icons are per-space now — desktop 2 starts empty ({} duplicated map entr{} dropped)",
+                wiped,
+                if wiped == 1 { "y" } else { "ies" }
+            ));
+        }
     }
 
     pub fn save(&self) {

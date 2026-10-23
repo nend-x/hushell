@@ -59,6 +59,10 @@ function applyState(st) {
 // fast path: the native open rides a fresh snapshot
 listen("volfly:state", (e) => applyState(e.payload)).catch(() => {});
 
+// the widget on the desktop, a media key or any other surface that moves
+// the master volume lands here instantly — no waiting for the poll
+listen("audio:master", (e) => applyState(e.payload || {})).catch(() => {});
+
 setInterval(() => {
   if (document.visibilityState !== "visible") return;
   if (Date.now() - touch < 1200) return;

@@ -4,6 +4,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod audio;
+mod brightness;
 mod clipboard;
 mod config;
 mod cycle;
@@ -27,11 +28,15 @@ mod util;
 mod winhook;
 
 use std::sync::Mutex;
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub struct AppShared(pub Mutex<shared::Shared>);
 
 fn main() {
+    // Fresh log every session (owner request): the file is replaced before
+    // the first boot line is written.
+    util::log_reset();
+    util::register_thread("main");
     util::log(&format!(
         "boot: hushell v{} (pid {})",
         env!("CARGO_PKG_VERSION"),
@@ -72,6 +77,7 @@ fn main() {
             volfly_hide,
             sync_state,
             hushtop_move,
+            hushtop_move_space,
             hushtop_menu,
             hushtop_open,
             hushtop_delete,
@@ -86,6 +92,18 @@ fn main() {
             hushtop_notepad_list,
             hushtop_widget_del,
             hushtop_widget_save,
+            hushtop_widget_add,
+            hushtop_delete_many,
+            hushtop_sort,
+            hushtop_space_set,
+            hushtop_effect_get,
+            hushtop_effect_set,
+            widget_drag_move,
+            widget_drag_drop,
+            widget_drag_cancel,
+            brightness_get,
+            brightness_set,
+            hushtop_ui_log,
             audio_master_get,
             audio_master_set,
             audio_master_step,
@@ -117,6 +135,8 @@ fn main() {
             lock_password_get,
             lock_hotkey_get,
             lock_hotkey_set,
+            lock_burn_get,
+            lock_burn_set,
             startup_get,
             startup_set,
             preview_overflow,
@@ -246,6 +266,10 @@ fn main() {
             .inner_size(1600.0, 900.0)
             .decorations(false)
             .transparent(false)
+            // The native pre-webview paint is dark too: between ShowWindow
+            // and the webview's first frame the window must never flash
+            // white (launch choreography starts on a dark sheet).
+            .background_color(tauri::utils::config::Color(27, 27, 31, 255))
             .shadow(false)
             .always_on_top(false)
             .skip_taskbar(true)
@@ -335,7 +359,13 @@ fn main() {
             .title("hushell-lockscreen")
             .inner_size(800.0, 600.0)
             .decorations(false)
-            .transparent(false)
+            // TRANSPARENT: the lock UI floats on the live desktop — hushtop
+            // beneath it fades the icons, sweeps the ruled-line curtain and
+            // calms the sheet while this window only draws the ink stack
+            // (clock, padlock, password line). Still TOPMOST + full virtual
+            // screen: every click and key lands here, nothing beneath is
+            // reachable — the lock stays a lock.
+            .transparent(true)
             .shadow(false)
             .always_on_top(true)
             .skip_taskbar(true)
@@ -418,6 +448,9 @@ fn main() {
                 s.hwnd_menu = wmenu.hwnd().map(|h| h.0 as isize).unwrap_or(0);
                 s.hwnd_startmenu = wsm.hwnd().map(|h| h.0 as isize).unwrap_or(0);
                 s.hwnd_lock = wlock.hwnd().map(|h| h.0 as isize).unwrap_or(0);
+                // Lock-free mirrors for the widget-drag hot path (see
+                // hushtop::drag_hwnds) — kept in step with the real fields.
+                crate::hushtop::drag_hwnds::set(s.hwnd_hushtop, s.hwnd_startmenu);
                 s.sec_bars = sec_created
                     .iter()
                     .map(|(_, h, m)| crate::shared::SecBar {
@@ -678,6 +711,15 @@ fn hushtop_move(app: tauri::AppHandle, name: String, x: i32, y: i32) -> Result<(
 }
 
 #[tauri::command]
+fn hushtop_move_space(
+    app: tauri::AppHandle,
+    names: Vec<String>,
+    target: usize,
+) -> Result<(), String> {
+    hushtop::cmd_move_space(&app, names, target)
+}
+
+#[tauri::command]
 fn hushtop_menu(app: tauri::AppHandle, open: bool) {
     hushtop::cmd_menu(&app, open);
 }
@@ -746,9 +788,7 @@ fn hushtop_prompt_state(app: tauri::AppHandle) -> HushtopPromptState {
 struct SyncState {
     tasks: Vec<shared::TaskDto>,
     tray: Vec<tray::TrayDto>,
-    hushtop: Vec<shared::HushtopItem>,
-    notepads: Vec<config::Notepad>,
-    widgets: Vec<config::HushWidget>,
+    spaces: Option<hushtop::SpacesDto>,
     lang: Option<lang::LangDto>,
 }
 
@@ -758,12 +798,11 @@ struct SyncState {
 fn sync_state(app: tauri::AppHandle) -> SyncState {
     let st = app.state::<AppShared>();
     let s = crate::util::lock_shared(&st.0);
+    let spaces = (s.hwnd_hushtop != 0).then(|| hushtop::spaces_dto(&s));
     SyncState {
         tasks: s.tasks.clone(),
         tray: s.tray_last.clone(),
-        hushtop: s.hushtop_items.clone(),
-        notepads: s.cfg.notepads.clone(),
-        widgets: s.cfg.widgets.clone(),
+        spaces,
         lang: lang::snapshot(),
     }
 }
@@ -807,11 +846,95 @@ fn hushtop_widget_save(
     hushtop::widget_save_pos(&app, id, col, row, w, h)
 }
 
+/// Drag-out drop from the start menu's widget gallery.
+#[tauri::command]
+fn hushtop_widget_add(
+    app: tauri::AppHandle,
+    kind: String,
+    col: i32,
+    row: i32,
+    space: usize,
+) -> Result<u32, String> {
+    if kind == "notes" {
+        hushtop::notepad_add(&app, col, row, space)
+    } else {
+        hushtop::widget_add(&app, &kind, col, row, space)
+    }
+}
+
+#[tauri::command]
+fn hushtop_delete_many(app: tauri::AppHandle, names: Vec<String>) -> Result<(), String> {
+    unsafe { hushtop::cmd_delete_many(&app, names) }
+}
+
+/// Explicit icon sort (per space): "name" | "date" | "type".
+#[tauri::command]
+fn hushtop_sort(app: tauri::AppHandle, space: usize, mode: String) -> Result<(), String> {
+    hushtop::sort_space(&app, space, mode)
+}
+
+/// The second-desktop widget switched spaces (single display only).
+#[tauri::command]
+fn hushtop_space_set(app: tauri::AppHandle, idx: usize) -> Result<(), String> {
+    hushtop::space_set(&app, idx)
+}
+
+#[tauri::command]
+fn hushtop_effect_get(app: tauri::AppHandle) -> String {
+    let st = app.state::<AppShared>();
+    let s = crate::util::lock_shared(&st.0);
+    s.cfg.effect.clone()
+}
+
+/// The effects widget picked a desktop particle layer.
+#[tauri::command]
+fn hushtop_effect_set(app: tauri::AppHandle, kind: String) -> Result<(), String> {
+    hushtop::effect_set(&app, kind)
+}
+
+// --- start-menu widget gallery: native ghost drag -------------------------
+
+#[tauri::command]
+fn widget_drag_move(app: tauri::AppHandle, kind: String, cx: f64, cy: f64) {
+    hushtop::widget_drag_move(&app, kind, cx, cy);
+}
+
+#[tauri::command]
+fn widget_drag_drop(app: tauri::AppHandle, kind: String, cx: f64, cy: f64) -> Result<(), String> {
+    hushtop::widget_drag_drop(&app, kind, cx, cy)
+}
+
+#[tauri::command]
+fn widget_drag_cancel(app: tauri::AppHandle) {
+    hushtop::widget_drag_cancel(&app);
+}
+
+// --- brightness ------------------------------------------------------------
+
+#[tauri::command]
+fn brightness_get() -> Option<u32> {
+    brightness::get()
+}
+
+#[tauri::command]
+fn brightness_set(v: u32) -> bool {
+    brightness::set(v) > 0
+}
+
+/// The webviews' window into the shell log — watchdog hits, space switches,
+/// effect picks and anything else the UI wants on the record.
+#[tauri::command]
+fn hushtop_ui_log(line: String) {
+    let line: String = line.chars().take(300).collect();
+    crate::util::log(&format!("ui: {line}"));
+}
+
 #[tauri::command]
 fn hushtop_notepad_list(app: tauri::AppHandle) -> Vec<config::Notepad> {
     let st = app.state::<AppShared>();
     let s = crate::util::lock_shared(&st.0);
-    s.cfg.notepads.clone()
+    let a = s.cfg.active_space.min(1);
+    s.cfg.spaces[a].notepads.clone()
 }
 
 #[tauri::command]
@@ -819,14 +942,28 @@ fn audio_master_get() -> Result<f32, String> {
     audio::master_get()
 }
 
-#[tauri::command]
-fn audio_master_set(vol: f32) -> Result<(), String> {
-    audio::master_set(vol)
+/// One broadcast after every master-volume mutation (slider set, media-key
+/// step, mute flip): the volume widget on the desktop and the volume flyout
+/// on the bar both repaint from the SAME event — no more 2s poll lag and
+/// no mute state that only one of them knows about.
+fn announce_audio(app: &tauri::AppHandle) {
+    if let Ok(st) = audio::state() {
+        let _ = app.emit("audio:master", &st);
+    }
 }
 
 #[tauri::command]
-fn audio_master_step(delta: f32) -> Result<f32, String> {
-    audio::master_step(delta)
+fn audio_master_set(app: tauri::AppHandle, vol: f32) -> Result<(), String> {
+    audio::master_set(vol)?;
+    announce_audio(&app);
+    Ok(())
+}
+
+#[tauri::command]
+fn audio_master_step(app: tauri::AppHandle, delta: f32) -> Result<f32, String> {
+    let v = audio::master_step(delta)?;
+    announce_audio(&app);
+    Ok(v)
 }
 
 #[tauri::command]
@@ -835,8 +972,10 @@ fn audio_mute_get() -> Result<bool, String> {
 }
 
 #[tauri::command]
-fn audio_mute_set(muted: bool) -> Result<(), String> {
-    audio::mute_set(muted)
+fn audio_mute_set(app: tauri::AppHandle, muted: bool) -> Result<(), String> {
+    audio::mute_set(muted)?;
+    announce_audio(&app);
+    Ok(())
 }
 
 #[tauri::command]
@@ -972,6 +1111,26 @@ fn lock_hotkey_set(app: tauri::AppHandle, on: bool) {
     ));
 }
 
+/// The lock screen's OLED burn shield (black frame after a minute of
+/// silence). The lockscreen page reads this fresh at every show — the
+/// options view can never be open while locked, so no live push is needed.
+#[tauri::command]
+fn lock_burn_get(app: tauri::AppHandle) -> bool {
+    let st = app.state::<AppShared>();
+    let s = crate::util::lock_shared(&st.0);
+    s.cfg.lock_burn
+}
+
+/// The lock screen's OLED burn shield switch (see config.rs).
+#[tauri::command]
+fn lock_burn_set(app: tauri::AppHandle, on: bool) {
+    let st = app.state::<AppShared>();
+    let mut s = crate::util::lock_shared(&st.0);
+    s.cfg.lock_burn = on;
+    s.cfg.save();
+    crate::util::log(&format!("config: lock burn shield switch -> {on}"));
+}
+
 #[tauri::command]
 fn startup_get(app: tauri::AppHandle) -> bool {
     let st = app.state::<AppShared>();
@@ -1008,7 +1167,7 @@ fn lock_password_get(app: tauri::AppHandle) -> bool {
     lockscreen::password_is_set(&app)
 }
 
-/// Shell shutdown from the start menu controls view — the same clean exit
+/// Shell shutdown from the start menu options view — the same clean exit
 /// path the power menu uses (request_exit → appbar release,
 /// native taskbar restore, desktop icons back, app.exit(0)).
 #[tauri::command]

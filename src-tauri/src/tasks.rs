@@ -11,8 +11,8 @@ use windows::Win32::Graphics::Dwm::{DwmGetWindowAttribute, DWMWA_CLOAKED};
 use windows::Win32::System::Threading::GetCurrentProcessId;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumWindows, GetAncestor, GetClassNameW, GetWindowLongPtrW, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, SendMessageTimeoutW, GA_ROOT, GWL_EXSTYLE, SMTO_ABORTIFHUNG,
-    WM_GETTEXT, WS_EX_TOOLWINDOW,
+    IsIconic, IsWindow, IsWindowVisible, SendMessageTimeoutW, ShowWindow, GA_ROOT, GWL_EXSTYLE,
+    SMTO_ABORTIFHUNG, SW_MINIMIZE, SW_RESTORE, WM_GETTEXT, WS_EX_TOOLWINDOW,
 };
 
 const EXCLUDED_CLASSES: &[&str] = &[
@@ -121,4 +121,43 @@ pub fn enumerate_light(ours: &[isize]) -> Vec<(isize, bool)> {
         true
     });
     list
+}
+
+// ---------------------------------------------------------------------------
+// Minimize-all (lock + boot choreography)
+// ---------------------------------------------------------------------------
+
+/// Minimize every visible foreign top-level window — the exact Alt-Tab
+/// filter of enumerate_light (own process, shell strips, wallpaper hosts,
+/// cloaked UWP hosts and tool windows are all skipped), so hushell's own
+/// windows and the desktop itself are untouched. Returns the hwnds this
+/// call MINIMIZED (already-iconic windows are left alone and not recorded).
+pub fn minimize_all_except_shell() -> Vec<isize> {
+    let mut done: Vec<isize> = Vec::new();
+    for (hw, iconic) in enumerate_light(&[]) {
+        if iconic {
+            continue;
+        }
+        let h = HWND(hw as _);
+        let ok = unsafe { ShowWindow(h, SW_MINIMIZE) };
+        if ok.as_bool() {
+            done.push(hw);
+        }
+    }
+    done
+}
+
+/// Restore what a lock parked: only windows that are STILL iconic (anything
+/// the user re-raised themselves stays as it is). Returns how many came back.
+pub fn restore_windows(list: &[isize]) -> usize {
+    let mut n = 0usize;
+    for &hw in list {
+        let h = HWND(hw as _);
+        if unsafe { IsWindow(h).as_bool() } && unsafe { IsIconic(h).as_bool() } {
+            if unsafe { ShowWindow(h, SW_RESTORE) }.as_bool() {
+                n += 1;
+            }
+        }
+    }
+    n
 }

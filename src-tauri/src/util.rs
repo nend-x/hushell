@@ -24,21 +24,89 @@ unsafe fn pump_sent_messages() {
     let _ = PeekMessageW(&mut msg, HWND::default(), 0, 0, PM_NOREMOVE | PM_QS_SENDMESSAGE);
 }
 
+// --- thread identity for diagnostics --------------------------------------
+// Every thread that matters registers a name (register_thread); lock
+// contention reports then say WHO holds the state lock and WHO is waiting,
+// instead of the old guessy one-liner.
+
+static NEXT_TID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static THREAD_TAGS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<u64, &'static str>>> =
+    std::sync::OnceLock::new();
+
+fn tid() -> u64 {
+    thread_local! {
+        static TID: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+    }
+    TID.with(|c| {
+        if c.get() == 0 {
+            c.set(NEXT_TID.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1);
+        }
+        c.get()
+    })
+}
+
+/// Name the calling thread for later diagnostic lines (lock contention).
+pub fn register_thread(tag: &'static str) {
+    let map = THREAD_TAGS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    if let Ok(mut m) = map.lock() {
+        m.insert(tid(), tag);
+    }
+}
+
+fn thread_tag(id: u64) -> String {
+    if let Some(map) = THREAD_TAGS.get() {
+        if let Ok(m) = map.lock() {
+            if let Some(t) = m.get(&id) {
+                return (*t).to_string();
+            }
+        }
+    }
+    format!("anon-{id}")
+}
+
+// --- the state lock, instrumented -----------------------------------------
+
+static LOCK_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static LOCK_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+
+fn ms_since_t0() -> u64 {
+    let t0 = T0.get_or_init(std::time::Instant::now);
+    t0.elapsed().as_millis() as u64
+}
+
 pub fn lock_shared(m: &std::sync::Mutex<Shared>) -> std::sync::MutexGuard<'_, Shared> {
     let start = std::time::Instant::now();
     let mut last_log = start;
     loop {
         match m.try_lock() {
-            Ok(g) => return g,
+            Ok(g) => {
+                let waited = start.elapsed().as_millis();
+                if waited >= 200 {
+                    log(&format!(
+                        "shared: '{}' got the lock after waiting {waited} ms",
+                        thread_tag(tid())
+                    ));
+                }
+                LOCK_OWNER.store(tid(), std::sync::atomic::Ordering::Relaxed);
+                LOCK_SINCE.store(ms_since_t0(), std::sync::atomic::Ordering::Relaxed);
+                return g;
+            }
             Err(std::sync::TryLockError::WouldBlock) => {
                 unsafe { pump_sent_messages() };
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 let now = std::time::Instant::now();
                 if now.duration_since(last_log) >= std::time::Duration::from_secs(5) {
                     last_log = now;
+                    let owner = LOCK_OWNER.load(std::sync::atomic::Ordering::Relaxed);
+                    let held_ms = ms_since_t0().saturating_sub(
+                        LOCK_SINCE.load(std::sync::atomic::Ordering::Relaxed),
+                    );
                     log(&format!(
-                        "shared: state lock contended for {} ms (main thread pumping sent messages)",
-                        (now - start).as_millis()
+                        "shared: '{}' has waited {} ms for the state lock — last taken by '{}' (thread {owner}) {held_ms} ms ago and not released since",
+                        thread_tag(tid()),
+                        (now - start).as_millis(),
+                        thread_tag(owner)
                     ));
                 }
             }
@@ -81,6 +149,25 @@ pub fn dpi_for(hwnd: HWND) -> u32 {
             d
         } else {
             96
+        }
+    }
+}
+
+/// Effective DPI of the monitor containing the point (physical screen
+/// coords). Mixed-DPI rigs render one hushtop webview across monitors of
+/// different scale factors — every per-monitor CSS conversion needs THIS,
+/// not the window DPI. None = the point sits on no monitor (or the API is
+/// unavailable) — callers fall back to the window DPI.
+pub fn monitor_dpi_at(x: i32, y: i32) -> Option<u32> {
+    use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
+    unsafe {
+        let mon = MonitorFromPoint(POINT { x, y }, MONITOR_DEFAULTTONEAREST);
+        let mut dx = 0u32;
+        let mut dy = 0u32;
+        if GetDpiForMonitor(mon, MDT_EFFECTIVE_DPI, &mut dx, &mut dy).is_ok() && dx > 0 {
+            Some(dx)
+        } else {
+            None
         }
     }
 }
@@ -185,19 +272,40 @@ pub fn del_gdi<T: Into<windows::Win32::Graphics::Gdi::HGDIOBJ>>(h: T) {
     }
 }
 
+/// Local timestamp for log lines.
+fn stamp() -> String {
+    use windows::Win32::System::SystemInformation::GetLocalTime;
+    let st = unsafe { GetLocalTime() };
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
+        st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
+    )
+}
+
+/// Start a FRESH log for this session — the file is replaced, not appended,
+/// so every shell start begins from a blank page (owner request).
+pub fn log_reset() {
+    if let Some(dir) = crate::config::data_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+        let path = dir.join("hushell.log");
+        use std::io::Write;
+        if let Ok(mut f) = std::fs::OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(true)
+            .open(path)
+        {
+            let _ = writeln!(f, "[{}] log opened (fresh session)", stamp());
+        }
+    }
+}
+
 /// Append a line to %APPDATA%\hushell\hushell.log (best effort, never panics).
 pub fn log(s: &str) {
     if let Some(dir) = crate::config::data_dir() {
         let _ = std::fs::create_dir_all(&dir);
         let path = dir.join("hushell.log");
-        let stamp = {
-            use windows::Win32::System::SystemInformation::GetLocalTime;
-            let st = unsafe { GetLocalTime() };
-            format!(
-                "{:04}-{:02}-{:02} {:02}:{:02}:{:02}",
-                st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond
-            )
-        };
+        let stamp = stamp();
         use std::io::Write;
         if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
             let _ = writeln!(f, "[{}] {}", stamp, s);

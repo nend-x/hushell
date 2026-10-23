@@ -4,14 +4,72 @@ const { listen } = window.__TAURI__.event;
 const CELL_W = 92;
 const CELL_H = 72;
 const MARGIN = 14;
+const CARD_GRID = 36;
+const CARD_GRID_Y = 18;
+const CARD_ANCHOR = 14;
 
 const iconsEl = document.getElementById("icons");
 const menuEl = document.getElementById("menu");
+const sortMenuEl = document.getElementById("sort-menu");
 const paperEl = document.getElementById("paper");
+const notepadsEl = document.getElementById("notepads");
+const widgetsEl = document.getElementById("widgets");
+const iconsNextEl = document.getElementById("icons-next");
+const wipeLineEl = document.getElementById("wipe-line");
+const marqueeEl = document.getElementById("marquee");
+const ghostEl = document.getElementById("ghost");
 
-const cells = new Map(); // name -> { el, img, label, item }
-let selected = null;
-let menuOpenFor = null; // null = closed, "desktop" = paper menu
+// ---- the spaces view (single payload = single truth) ----------------------
+
+let view = null; // last hushtop:spaces payload
+const cells = new Map(); // "space:name" -> { el, img, label, item, space }
+let renderedActive = 0; // the space painted in the main layers (single mode)
+
+function regionOf(space) {
+  if (view && view.dual && view.monitors[space]) {
+    return view.monitors[space];
+  }
+  // single display: the viewport IS the region (one monitor spans it all)
+  if (!view || !view.monitors.length) {
+    return { x: 0, y: 0, w: innerWidth, h: innerHeight };
+  }
+  let l = Infinity, t = Infinity, r = -Infinity, b = -Infinity;
+  for (const m of view.monitors) {
+    l = Math.min(l, m.x); t = Math.min(t, m.y);
+    r = Math.max(r, m.x + m.w); b = Math.max(b, m.y + m.h);
+  }
+  return { x: l, y: t, w: r - l, h: b - t };
+}
+
+function spaceAtPoint(x, y) {
+  if (view && view.dual) {
+    for (let i = 0; i < Math.min(2, view.monitors.length); i++) {
+      const m = view.monitors[i];
+      if (x >= m.x && x < m.x + m.w && y >= m.y && y < m.y + m.h) return i;
+    }
+    return view.active || 0;
+  }
+  return (view && view.active) || 0;
+}
+
+function visibleSpaces() {
+  if (view && view.dual) return [0, 1];
+  return [renderedActive];
+}
+
+function placeByCell(el, c, r, space) {
+  const reg = regionOf(space);
+  el.style.left = reg.x + CARD_ANCHOR + c * CARD_GRID + "px";
+  el.style.top = reg.y + CARD_ANCHOR + r * CARD_GRID_Y + "px";
+}
+
+function cardCell(x, y, space) {
+  const reg = regionOf(space);
+  return {
+    c: Math.round((x - reg.x - CARD_ANCHOR) / CARD_GRID),
+    r: Math.round((y - reg.y - CARD_ANCHOR) / CARD_GRID_Y),
+  };
+}
 
 const PLACEHOLDER =
   "data:image/svg+xml;utf8," +
@@ -29,9 +87,26 @@ function displayName(name, kind) {
   return n;
 }
 
-// ---------- rendering (diff, never rebuild) ----------
+// ---------- selection -------------------------------------------------------
 
-function makeCell(item) {
+let selSet = new Set(); // selected icon names
+
+function paintSelection() {
+  for (const [, entry] of cells) {
+    entry.el.classList.toggle("selected", selSet.has(entry.item.name));
+  }
+}
+
+function setSelection(names) {
+  selSet = new Set(names);
+  paintSelection();
+}
+
+// ---------- rendering (diff, never rebuild) ---------------------------------
+
+const cellKey = (space, name) => space + ":" + name;
+
+function makeCell(item, space) {
   const el = document.createElement("div");
   el.className = "cell";
   const img = document.createElement("img");
@@ -43,7 +118,7 @@ function makeCell(item) {
   el.appendChild(label);
   iconsEl.appendChild(el);
   wireCell(el, img, label);
-  return { el, img, label, item };
+  return { el, img, label, item, space };
 }
 
 function paintCell(entry, item) {
@@ -56,48 +131,56 @@ function paintCell(entry, item) {
   entry.el.style.top = item.y + "px";
 }
 
-function render(list) {
-  const seen = new Set();
-  for (const item of list) {
-    seen.add(item.name);
-    const entry = cells.get(item.name);
-    if (entry) {
-      paintCell(entry, item);
-    } else {
-      const e = makeCell(item);
-      paintCell(e, item);
-      cells.set(item.name, e);
+function renderIcons() {
+  if (!view) return;
+  const want = new Set();
+  for (const space of visibleSpaces()) {
+    for (const item of view.items[space] || []) {
+      want.add(cellKey(space, item.name));
+      const key = cellKey(space, item.name);
+      const entry = cells.get(key);
+      if (entry) {
+        paintCell(entry, item);
+      } else {
+        const e = makeCell(item, space);
+        paintCell(e, item);
+        cells.set(key, e);
+      }
     }
   }
-  for (const [name, entry] of [...cells]) {
-    if (!seen.has(name)) {
+  for (const [key, entry] of [...cells]) {
+    if (!want.has(key)) {
       entry.el.remove();
-      cells.delete(name);
-      if (selected === name) selected = null;
+      cells.delete(key);
+      selSet.delete(entry.item.name);
     }
   }
+  paintSelection();
 }
 
-// ---------- drag (movable, config-persisted, desktop untouched) ----------
+// ---------- icon drag (movable, config-persisted, desktop untouched) -------
 
-function gridSize() {
-  const cols = Math.max(1, Math.floor((innerWidth - MARGIN * 2) / CELL_W));
-  const rows = Math.max(1, Math.floor((innerHeight - MARGIN * 2) / CELL_H));
+function gridSize(space) {
+  const reg = regionOf(space);
+  const cols = Math.max(1, Math.floor((reg.w - MARGIN * 2) / CELL_W));
+  const rows = Math.max(1, Math.floor((reg.h - MARGIN * 2) / CELL_H));
   return { cols, rows };
 }
 
-const cellKey = (c, r) => c + "," + r;
+const ck = (c, r) => c + "," + r;
 
-// Cells currently owned by OTHER icons. Their item.x/y come from the
-// native occupancy resolver, so they are always on-grid and unique.
-function occupiedCells(exceptName) {
+// Cells currently owned by OTHER icons OF THE SAME SPACE, in that space's
+// region-relative coordinates.
+function occupiedCells(space, exceptNames) {
   const taken = new Set();
-  const { cols, rows } = gridSize();
-  for (const [name, entry] of cells) {
-    if (name === exceptName) continue;
-    const c = Math.min(cols - 1, Math.max(0, Math.round((entry.item.x - MARGIN) / CELL_W)));
-    const r = Math.min(rows - 1, Math.max(0, Math.round((entry.item.y - MARGIN) / CELL_H)));
-    taken.add(cellKey(c, r));
+  const reg = regionOf(space);
+  const { cols, rows } = gridSize(space);
+  for (const [, entry] of cells) {
+    if (entry.space !== space || exceptNames.has(entry.item.name)) continue;
+    taken.add(ck(
+      Math.min(cols - 1, Math.max(0, Math.round((entry.item.x - reg.x - MARGIN) / CELL_W))),
+      Math.min(rows - 1, Math.max(0, Math.round((entry.item.y - reg.y - MARGIN) / CELL_H)))
+    ));
   }
   return taken;
 }
@@ -106,11 +189,10 @@ function occupiedCells(exceptName) {
 // (expanding ring, ties toward smaller column then row). Running it here,
 // BEFORE the drop lands, means a drop onto an occupied cell rehomes
 // INSTANTLY with no IPC roundtrip and no visible stacking; the native
-// cmd_move re-checks and stays the enforcer for races (new file between
-// drag start and drop).
+// cmd_move re-checks and stays the enforcer for races.
 function nearestFreeCell(taken, cols, rows, c0, r0) {
   const inGrid = (c, r) => c >= 0 && r >= 0 && c < cols && r < rows;
-  if (inGrid(c0, r0) && !taken.has(cellKey(c0, r0))) return [c0, r0];
+  if (inGrid(c0, r0) && !taken.has(ck(c0, r0))) return [c0, r0];
   const maxR = Math.max(rows, cols);
   for (let rad = 1; rad <= maxR; rad++) {
     let best = null;
@@ -119,13 +201,9 @@ function nearestFreeCell(taken, cols, rows, c0, r0) {
         if (Math.abs(dc) !== rad && Math.abs(dr) !== rad) continue;
         const c = c0 + dc;
         const r = r0 + dr;
-        if (!inGrid(c, r) || taken.has(cellKey(c, r))) continue;
+        if (!inGrid(c, r) || taken.has(ck(c, r))) continue;
         const dist = Math.abs(dc) + Math.abs(dr);
-        if (
-          !best ||
-          dist < best[0] ||
-          (dist === best[0] && (c < best[1] || (c === best[1] && r < best[2])))
-        ) {
+        if (!best || dist < best[0] || (dist === best[0] && (c < best[1] || (c === best[1] && r < best[2])))) {
           best = [dist, c, r];
         }
       }
@@ -135,6 +213,8 @@ function nearestFreeCell(taken, cols, rows, c0, r0) {
   return [c0, r0]; // grid full — native decides
 }
 
+let oleDrag = null; // { name, space } — the icon handed to the native OLE drag
+
 function wireCell(el, img, label) {
   let drag = null;
 
@@ -142,17 +222,34 @@ function wireCell(el, img, label) {
     if (e.button !== 0) return;
     hideMenu();
     const name = el.dataset.name;
-    if (selected && selected !== name) {
-      const prev = cells.get(selected);
-      if (prev) prev.el.classList.remove("selected");
+    const entry = [...cells.values()].find((c) => c.el === el);
+    const space = entry ? entry.space : 0;
+    if (e.ctrlKey) {
+      // toggle membership, no drag starts from a ctrl-click
+      if (selSet.has(name)) selSet.delete(name);
+      else selSet.add(name);
+      paintSelection();
+      return;
     }
-    selected = name;
-    el.classList.add("selected");
-    const r = el.getBoundingClientRect();
+    if (!selSet.has(name)) setSelection([name]);
+    const names = [...selSet];
+    const multi = names.length > 1;
+    const parts = names
+      .map((n) => {
+        for (const s of visibleSpaces()) {
+          const c = cells.get(cellKey(s, n));
+          if (c) return { name: n, el: c.el, space: c.space, ax: e.clientX - c.el.offsetLeft, ay: e.clientY - c.el.offsetTop };
+        }
+        return null;
+      })
+      .filter(Boolean);
     drag = {
-      name,
-      dx: e.clientX - r.left,
-      dy: e.clientY - r.top,
+      names,
+      multi,
+      space,
+      parts,
+      dx: e.clientX - el.offsetLeft,
+      dy: e.clientY - el.offsetTop,
       moved: false,
       handed: false,
     };
@@ -161,40 +258,72 @@ function wireCell(el, img, label) {
 
   el.addEventListener("pointermove", (e) => {
     if (!drag) return;
-    const x = Math.round(e.clientX - drag.dx);
-    const y = Math.round(e.clientY - drag.dy);
-    if (!drag.moved && (Math.abs(x - el.offsetLeft) > 2 || Math.abs(y - el.offsetTop) > 2)) {
+    const lead = drag.parts.find((p) => p.el === el) || drag.parts[0];
+    if (!drag.moved && (Math.abs(e.clientX - lead.ax - lead.el.offsetLeft) > 2 || Math.abs(e.clientY - lead.ay - lead.el.offsetTop) > 2)) {
       drag.moved = true;
-      el.classList.add("dragging");
-    }
-    if (drag.moved) {
-      if (!drag.handed) {
+      for (const p of drag.parts) p.el.classList.add("dragging");
+      // ONE icon only hands the drag to the native OLE pipeline (drag to
+      // Explorer windows etc.). A multi-selection moves inside the desktop.
+      if (!drag.multi && !drag.handed) {
         drag.handed = true;
-        invoke("hushtop_dragout", { name: el.dataset.name, dx: drag.dx, dy: drag.dy }).catch(
-          () => {}
-        );
+        oleDrag = { name: lead.name, space: drag.space };
+        invoke("hushtop_dragout", { name: lead.name, dx: lead.ax, dy: lead.ay }).catch(() => {});
+        return;
       }
-      el.style.left = x + "px";
-      el.style.top = y + "px";
+    }
+    if (!drag.moved || drag.handed) return;
+    for (const p of drag.parts) {
+      p.el.style.left = Math.round(e.clientX - p.ax) + "px";
+      p.el.style.top = Math.round(e.clientY - p.ay) + "px";
     }
   });
 
-  el.addEventListener("pointerup", (e) => {
+  const finish = async (commit) => {
     if (!drag) return;
-    el.classList.remove("dragging");
     const d = drag;
     drag = null;
-    if (!d.moved) return; // plain click — nothing to save
-    const { cols, rows } = gridSize();
-    const c = Math.min(cols - 1, Math.max(0, Math.round((e.clientX - d.dx - MARGIN) / CELL_W)));
-    const r = Math.min(rows - 1, Math.max(0, Math.round((e.clientY - d.dy - MARGIN) / CELL_H)));
-    const [fc, fr] = nearestFreeCell(occupiedCells(d.name), cols, rows, c, r);
-    const gx = MARGIN + fc * CELL_W;
-    const gy = MARGIN + fr * CELL_H;
-    el.style.left = gx + "px";
-    el.style.top = gy + "px";
-    invoke("hushtop_move", { name: d.name, x: gx, y: gy }).catch(() => {});
-  });
+    for (const p of d.parts) p.el.classList.remove("dragging");
+    if (!d.moved || d.handed) return; // plain click or native-owned drag
+    if (!commit) return;
+    // Free placing: every icon lands EXACTLY on the cell it was dropped on
+    // (collision -> nearest free, one motion, no re-sorting of anything else).
+    const drops = d.parts.map((p) => {
+      const px = p.el.offsetLeft;
+      const py = p.el.offsetTop;
+      const space = spaceAtPoint(px, py);
+      const reg = regionOf(space);
+      const { cols, rows } = gridSize(space);
+      const c0 = Math.min(cols - 1, Math.max(0, Math.round((px - reg.x - MARGIN) / CELL_W)));
+      const r0 = Math.min(rows - 1, Math.max(0, Math.round((py - reg.y - MARGIN) / CELL_H)));
+      return { p, space, c0, r0 };
+    });
+    // resolve collisions among the moving set, per space, first-come wins
+    const takenBySpace = new Map();
+    const settled = new Map(); // name -> {space, c, r}
+    for (const d0 of drops) {
+      if (!takenBySpace.has(d0.space)) {
+        takenBySpace.set(d0.space, occupiedCells(d0.space, new Set(d.names)));
+      }
+      const taken = takenBySpace.get(d0.space);
+      const { cols, rows } = gridSize(d0.space);
+      const [fc, fr] = nearestFreeCell(taken, cols, rows, d0.c0, d0.r0);
+      taken.add(ck(fc, fr));
+      settled.set(d0.p.name, { space: d0.space, c: fc, r: fr });
+      const reg = regionOf(d0.space);
+      d0.p.el.style.left = reg.x + MARGIN + fc * CELL_W + "px";
+      d0.p.el.style.top = reg.y + MARGIN + fr * CELL_H + "px";
+    }
+    // commit sequentially — the native side re-checks occupancy per drop
+    for (const [name, s] of settled) {
+      const reg = regionOf(s.space);
+      const gx = reg.x + MARGIN + s.c * CELL_W;
+      const gy = reg.y + MARGIN + s.r * CELL_H;
+      await invoke("hushtop_move", { name, x: gx, y: gy }).catch(() => {});
+    }
+  };
+
+  el.addEventListener("pointerup", () => { finish(true); });
+  el.addEventListener("pointercancel", () => { finish(false); });
 
   el.addEventListener("dblclick", () => {
     invoke("hushtop_open", { name: el.dataset.name }).catch(() => toast("Could not open"));
@@ -204,26 +333,55 @@ function wireCell(el, img, label) {
     e.preventDefault();
     e.stopPropagation();
     const name = el.dataset.name;
-    const base = [
-      { t: "Open", a: () => invoke("hushtop_open", { name }).catch(() => toast("Could not open")) },
-      { t: "Rename", a: () => invoke("hushtop_prompt_show", { mode: "rename", name }).catch(() => {}) },
-    ];
-    const tail = [
-      { sep: true },
-      { t: "Delete", a: () => invoke("hushtop_delete", { name }).catch(() => toast("Could not delete")) },
-    ];
-    invoke("startmenu_is_pinned", { name })
-      .then((pinned) => {
-        const pinRow = pinned
-          ? { t: "Unpin from start", a: () => invoke("startmenu_unpin", { target: name }).catch(() => {}) }
-          : { t: "Pin to start", a: () => invoke("startmenu_pin", { target: name }).catch(() => {}) };
-        showMenu(e.clientX, e.clientY, [...base, pinRow, ...tail]);
-      })
-      .catch(() => showMenu(e.clientX, e.clientY, [...base, ...tail]));
+    const many = selSet.size > 1 && selSet.has(name);
+    if (!selSet.has(name)) setSelection([name]);
+    const targets = many ? [...selSet] : [name];
+    const base = [];
+    if (many) {
+      base.push({
+        t: "Open",
+        a: () => {
+          for (const n of targets) invoke("hushtop_open", { name: n }).catch(() => {});
+        },
+      });
+    } else {
+      base.push({ t: "Open", a: () => invoke("hushtop_open", { name }).catch(() => toast("Could not open")) });
+      base.push({ t: "Rename", a: () => invoke("hushtop_prompt_show", { mode: "rename", name }).catch(() => {}) });
+    }
+    // Icons are PER-DESKTOP: hand the selection to the other one (single
+    // display only — with two monitors a drag across the boundary already
+    // moves icons via the drop point).
+    if (view && !view.dual) {
+      const other = (view.active || 0) === 0 ? 1 : 0;
+      base.push({
+        t: "Move to desktop " + (other + 1),
+        a: () =>
+          invoke("hushtop_move_space", { names: targets, target: other }).catch(() =>
+            toast("Could not move")
+          ),
+      });
+    }
+    const tail = [{ sep: true }];
+    tail.push({
+      t: many ? "Delete selected" : "Delete",
+      a: () => invoke("hushtop_delete_many", { names: targets }).catch(() => toast("Could not delete")),
+    });
+    if (!many) {
+      invoke("startmenu_is_pinned", { name })
+        .then((pinned) => {
+          const pinRow = pinned
+            ? { t: "Unpin from start", a: () => invoke("startmenu_unpin", { target: name }).catch(() => {}) }
+            : { t: "Pin to start", a: () => invoke("startmenu_pin", { target: name }).catch(() => {}) };
+          showMenu(e.clientX, e.clientY, [...base, pinRow, ...tail]);
+        })
+        .catch(() => showMenu(e.clientX, e.clientY, [...base, ...tail]));
+    } else {
+      showMenu(e.clientX, e.clientY, [...base, ...tail]);
+    }
   });
 }
 
-// ---------- context menu ----------
+// ---------- context menu ----------------------------------------------------
 
 function showMenu(x, y, items) {
   menuEl.replaceChildren();
@@ -259,30 +417,125 @@ function hideMenu() {
   invoke("hushtop_menu", { open: false }).catch(() => {});
 }
 
+// ---------- the sort menu (uiexample paper, per-space, explicit only) -------
+
+function showSortMenu(x, y) {
+  const space = spaceAtPoint(x, y);
+  sortMenuEl.replaceChildren();
+  const items = [
+    { t: "By name", m: "name" },
+    { t: "By date", m: "date" },
+    { t: "By type", m: "type" },
+  ];
+  for (const it of items) {
+    const mi = document.createElement("div");
+    mi.className = "mi";
+    mi.textContent = it.t;
+    mi.addEventListener("click", () => {
+      hideSortMenu();
+      invoke("hushtop_sort", { space, mode: it.m }).catch(() => {});
+    });
+    sortMenuEl.appendChild(mi);
+  }
+  sortMenuEl.classList.remove("hidden");
+  sortMenuEl.style.left = Math.max(2, Math.min(x, innerWidth - sortMenuEl.offsetWidth - 4)) + "px";
+  sortMenuEl.style.top = Math.max(2, Math.min(y, innerHeight - sortMenuEl.offsetHeight - 4)) + "px";
+}
+
+function hideSortMenu() {
+  sortMenuEl.classList.add("hidden");
+}
+
+// The sort menu answers only to its own two closers — an outside press or a
+// choice. Everything else (menus closing, foreground moves, drags) leaves it
+// strictly alone.
+document.addEventListener("pointerdown", (e) => {
+  if (sortMenuEl.classList.contains("hidden")) return;
+  if (sortMenuEl.contains(e.target)) return;
+  hideSortMenu();
+});
+
 paperEl.addEventListener("contextmenu", (e) => {
   e.preventDefault();
   hideMenu();
   showMenu(e.clientX, e.clientY, [
     { t: "Refresh", a: () => invoke("hushtop_refresh").catch(() => {}) },
+    { t: "Sort", a: () => showSortMenu(e.clientX, e.clientY) },
     { sep: true },
     { t: "New folder", a: () => invoke("hushtop_prompt_show", { mode: "newfolder", name: "" }).catch(() => {}) },
     { t: "New file", a: () => invoke("hushtop_prompt_show", { mode: "newfile", name: "" }).catch(() => {}) },
   ]);
 });
 
+// ---------- marquee selection (hold LMB on the paper, sweep, release) -------
+
+let marquee = null;
+
 paperEl.addEventListener("pointerdown", (e) => {
-  if (e.target === paperEl || e.target === iconsEl) {
-    hideMenu();
-    invoke("startmenu_hide").catch(() => {});
-    if (selected) {
-      const prev = cells.get(selected);
-      if (prev) prev.el.classList.remove("selected");
-      selected = null;
+  if (e.button !== 0) return;
+  if (e.target !== paperEl && e.target !== iconsEl) return;
+  hideMenu();
+  invoke("startmenu_hide").catch(() => {});
+  marquee = { x0: e.clientX, y0: e.clientY, moved: false };
+  marqueeEl.style.left = e.clientX + "px";
+  marqueeEl.style.top = e.clientY + "px";
+  marqueeEl.style.width = "0px";
+  marqueeEl.style.height = "0px";
+  paperEl.setPointerCapture(e.pointerId);
+});
+
+paperEl.addEventListener("pointermove", (e) => {
+  if (!marquee) return;
+  const x = Math.min(marquee.x0, e.clientX);
+  const y = Math.min(marquee.y0, e.clientY);
+  const w = Math.abs(e.clientX - marquee.x0);
+  const h = Math.abs(e.clientY - marquee.y0);
+  if (!marquee.moved && (w > 3 || h > 3)) {
+    marquee.moved = true;
+    marqueeEl.classList.add("on");
+  }
+  if (!marquee.moved) return;
+  marqueeEl.style.left = x + "px";
+  marqueeEl.style.top = y + "px";
+  marqueeEl.style.width = w + "px";
+  marqueeEl.style.height = h + "px";
+  const rx = x + w, ry = y + h;
+  const hit = new Set();
+  for (const [, entry] of cells) {
+    const el = entry.el;
+    const l = el.offsetLeft, t = el.offsetTop;
+    if (l < rx && l + el.offsetWidth > x && t < ry && t + el.offsetHeight > y) {
+      hit.add(entry.item.name);
     }
+  }
+  setSelection(hit);
+});
+
+const marqueeEnd = (commit) => {
+  if (!marquee) return;
+  const m = marquee;
+  marquee = null;
+  marqueeEl.classList.remove("on");
+  if (!commit) return;
+  if (!m.moved) setSelection([]); // a plain paper click clears the selection
+};
+
+paperEl.addEventListener("pointerup", () => marqueeEnd(true));
+paperEl.addEventListener("pointercancel", () => marqueeEnd(false));
+
+// bulk delete — the Delete key clears every selected icon to the bin
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Delete" && selSet.size > 0 && !e.target.closest("textarea, input")) {
+    invoke("hushtop_delete_many", { names: [...selSet] }).catch(() => toast("Could not delete"));
+  } else if (e.key === "Escape") {
+    hideSortMenu();
+    hideMenu();
+    setSelection([]);
   }
 });
 
-// heartbeat-driven close (foreground moved to another app)
+// heartbeat-driven close (foreground moved to another app) — the regular
+// menu only; the sort menu keeps its own counsel
 listen("hushtop:menu_close", () => {
   menuOpenFor = null;
   menuEl.classList.add("hidden");
@@ -301,13 +554,34 @@ function toast(msg) {
   toast._h = setTimeout(() => t.classList.remove("show"), 2200);
 }
 
-// ---------- events from the backend ----------
+// ---------- events from the backend -----------------------------------------
 
-listen("hushtop:icons", (e) => render(e.payload)).catch(console.error);
+let menuOpenFor = null; // null = closed, "open" = a menu is up
+
+// THE desktop payload: regions, both spaces' icons, both spaces' cards,
+// the active space and the effect. Everything renders from this.
+listen("hushtop:spaces", (e) => onSpaces(e.payload)).catch(console.error);
+
+// Card-only updates (add/save/del of widgets + notepads).
+listen("hushtop:cards", (e) => {
+  if (!view) return;
+  view.spaces = (e.payload && e.payload.spaces) || view.spaces;
+  renderNotepads();
+  renderWidgets();
+}).catch(console.error);
+
+listen("hushtop:effect", (e) => {
+  // A pick from the effects widget — this IS the user's intent, so it is
+  // remembered even while suspended: the unlock restore replays exactly
+  // this, never a value a stray payload could have dressed the sheet with.
+  fxUserKind = desktopFxKind(e.payload || "none");
+  fxSet(fxUserKind);
+}).catch(console.error);
 
 listen("hushtop:drag_move", (e) => {
   const p = e.payload || {};
-  const entry = cells.get(p.name);
+  const key = oleDrag ? cellKey(oleDrag.space, p.name) : null;
+  const entry = (key && cells.get(key)) || [...cells.values()].find((c) => c.item.name === p.name);
   if (!entry) return;
   entry.el.classList.add("dragging");
   entry.el.style.left = p.x + "px";
@@ -316,84 +590,202 @@ listen("hushtop:drag_move", (e) => {
 
 listen("hushtop:drag_ended", (e) => {
   const name = typeof e.payload === "string" ? e.payload : e.payload && e.payload.name;
-  const entry = name && cells.get(name);
-  if (entry) entry.el.classList.remove("dragging");
+  for (const [, entry] of cells) {
+    if (entry.item.name === name) entry.el.classList.remove("dragging");
+  }
+  oleDrag = null;
 });
 
 // startup sync in case the first emit beat us to it
 (async () => {
   try {
     const st = await invoke("sync_state");
-    if (st.hushtop) render(st.hushtop);
-    if (st.notepads) renderNotepads(st.notepads);
-    if (st.widgets) renderWidgets(st.widgets);
+    if (st.spaces) onSpaces(st.spaces);
   } catch (e) {
     console.error(e);
   }
 })();
 
-const notepadsEl = document.getElementById("notepads");
-const npEl = new Map(); // id -> { el, ta }
+// ---------- the spaces payload -> everything --------------------------------
+
+const spacesUiHooks = new Set(); // widgets that mirror the spaces state
+
+// one-liner into the shell log (proof when something misbehaves on a rig
+// we cannot reproduce)
+function ulog(msg) {
+  invoke("hushtop_ui_log", { line: msg }).catch(() => {});
+}
+
+function onSpaces(dto) {
+  if (!dto) return;
+  const prevActive = view ? (view.dual ? renderedActive : view.active) : null;
+  view = dto;
+  const switchedSingle =
+    !dto.dual &&
+    prevActive !== null &&
+    dto.active !== prevActive;
+  renderedActive = dto.active;
+  fxUserKind = desktopFxKind(dto.effect);
+  fxSet(fxUserKind);
+  if (switchedSingle) ulog("spaces: switch -> space " + (dto.active + 1) + " (wipe)");
+  for (const hook of spacesUiHooks) {
+    try { hook(dto); } catch (err) { /* a dead widget never blocks the rest */ }
+  }
+  if (switchedSingle) {
+    playWipe(dto, prevActive);
+  } else {
+    renderAll();
+  }
+}
+
+function renderAll() {
+  renderIcons();
+  renderNotepads();
+  renderWidgets();
+  playBoot(); // first real render = the desktop exists — start the boot reveal
+}
+
+// ---------- the space-switch wipe (a line sweeps right -> left) -------------
+
+let wipeBusy = false;
+
+function playWipe(dto, fromSpace) {
+  if (wipeBusy) { renderAll(); return; }
+  wipeBusy = true;
+  const incoming = dto.active;
+  // The incoming space paints into its own layer: icons + static previews of
+  // its cards, positioned exactly like the real render will place them.
+  iconsNextEl.replaceChildren();
+  for (const item of dto.items[incoming] || []) {
+    const el = document.createElement("div");
+    el.className = "cell";
+    const img = document.createElement("img");
+    img.src = item.icon ? `data:image/png;base64,${item.icon}` : PLACEHOLDER;
+    img.draggable = false;
+    const label = document.createElement("div");
+    label.className = "label";
+    label.textContent = displayName(item.name, item.kind);
+    el.appendChild(img);
+    el.appendChild(label);
+    el.style.left = item.x + "px";
+    el.style.top = item.y + "px";
+    iconsNextEl.appendChild(el);
+  }
+  const cards = (dto.spaces[incoming] || { widgets: [], notepads: [] });
+  for (const w of cards.widgets) iconsNextEl.appendChild(staticCard(w, incoming, w.kind));
+  for (const n of cards.notepads) iconsNextEl.appendChild(staticCard(n, incoming, "notes"));
+  // The second-desktop switcher is GLOBAL: it rides the incoming desktop
+  // even when its record lives on the other one — it must never blink out
+  // mid-wipe (it is the control that switches back).
+  if (!dto.dual) {
+    for (let s = 0; s < (dto.spaces || []).length; s++) {
+      if (s === incoming) continue;
+      for (const w of (dto.spaces[s] || { widgets: [] }).widgets || []) {
+        if (w.kind === "spaces") iconsNextEl.appendChild(staticCard(w, incoming, w.kind));
+      }
+    }
+  }
+
+  iconsNextEl.style.clipPath = "inset(0 0 0 100%)";
+  wipeLineEl.style.left = "100%";
+  iconsNextEl.classList.add("on");
+  wipeLineEl.classList.add("on");
+
+  const dur = 650;
+  const ease = "cubic-bezier(0.33, 0.9, 0.25, 1)";
+  const anim = iconsNextEl.animate(
+    [
+      { clipPath: "inset(0 0 0 100%)" },
+      { clipPath: "inset(0 0 0 0%)" },
+    ],
+    { duration: dur, easing: ease }
+  );
+  wipeLineEl.animate(
+    [
+      { left: "100%" },
+      { left: "0%" },
+    ],
+    { duration: dur, easing: ease }
+  );
+  // The OUTGOING desktop leaves WITH the bar: right of the line the incoming
+  // space is already visible, left of it the old one lingers — the bar
+  // itself erases the old icons as it passes. (Only the incoming layer used
+  // to animate, so on a switch to a mostly-empty desktop the old icons sat
+  // untouched until the final swap, then "just disappeared" — no sweep.)
+  // fill:forwards holds the final clip; cancel() below drops it the same
+  // tick renderAll repaints the new space — no last-frame flash.
+  const outgoing = [iconsEl, notepadsEl, widgetsEl].map((el) =>
+    el.animate(
+      [
+        { clipPath: "inset(0 0% 0 0)" },
+        { clipPath: "inset(0 100% 0 0)" },
+      ],
+      { duration: dur, easing: ease, fill: "forwards" }
+    )
+  );
+  anim.onfinish = () => {
+    for (const a of outgoing) a.cancel();
+    iconsNextEl.classList.remove("on");
+    wipeLineEl.classList.remove("on");
+    iconsNextEl.replaceChildren();
+    wipeBusy = false;
+    renderedActive = incoming;
+    renderAll();
+  };
+}
+
+// A preview box that LOOKS like the real card for the length of the wipe.
+function staticCard(rec, space, kind) {
+  const el = document.createElement("div");
+  el.className = "notepad widget " + kind;
+  // CARD cadence — placeByCell is the 92x72 icon grid and threw every wipe
+  // preview up to ~600px away from where the real card will land.
+  placeByCard(el, rec.col, rec.row, space);
+  el.style.width = rec.w + "px";
+  el.style.height = rec.h + "px";
+  const head = document.createElement("div");
+  head.className = "grip";
+  const dots = document.createElement("span");
+  dots.className = "grip-dots";
+  for (let i = 0; i < 3; i++) dots.appendChild(document.createElement("i"));
+  head.appendChild(dots);
+  el.appendChild(head);
+  // the REAL widget body — previews are the widget, not a drawing of it
+  el.appendChild(hushWidgetPreview(kind));
+  return el;
+}
+
+// ---------- notepads ---------------------------------------------------------
+
+const npEl = new Map(); // id -> { el, ta, space }
 const npSaveTimers = {};
 
 // ---- card snapping: the ruled sheet (Grid 2.0) ----------------------------
 // The landing math is the paper cadence: cards settle on a rhythm anchored
 // at the 14px margin (the same one as the horizontal rules and the icon
-// grid). Horizontal stays on the 36px rule; the vertical step is 18px —
-// twice the horizontal resolution, twice as many landing spots (every
-// ruled line AND every midpoint between two lines). Snap is pure grid:
-// cards never pull toward each other, and nothing reserves cells, so free
-// arrangement (side by side included) stays free.
-//
-// What Grid 2.0 adds is the part the cadence alone could never show:
-//   * the card follows the cursor 1:1 while a LANDING FRAME outlines the
-//     exact cell it will occupy — no more guessing where the snap lands;
-//   * hairline ALIGNMENT GUIDES flash when that cell lines up with a
-//     sibling edge or the paper margin — zero pull, pure information;
-//   * on release the card SETTLES onto the frame (110ms glide) instead of
-//     teleporting;
-//   * Alt holds the grid off — fine, snap-free placement for the rare
-//     pixel-perfect moment.
-const CARD_GRID = 36;
-const CARD_GRID_Y = 18;
-const CARD_ANCHOR = 14;
-
-function cardMagnet(v, axis) {
+// grid). Horizontal stays on the 36px rule; the vertical step is 18px.
+function cardMagnet(v, axis, space) {
+  const reg = regionOf(space);
   const grid = axis === "x" ? CARD_GRID : CARD_GRID_Y;
-  return Math.round(CARD_ANCHOR + Math.round((v - CARD_ANCHOR) / grid) * grid);
+  const anchor = (axis === "x" ? reg.x : reg.y) + CARD_ANCHOR;
+  return Math.round(anchor + Math.round((v - anchor) / grid) * grid);
 }
 
-// ---- the layout map -------------------------------------------------------
-// The paper remembers CELLS, not pixels: a card's spot is its grid address
-// (col, row) — col steps 36px, row steps 18px, both anchored at 14px. Pixels
-// are derived at render time, so a save→reload round trip lands EXACTLY on
-// the arranged cell no matter the DPI, monitor size, or when the webview
-// boots. Rust stores the map verbatim; nothing on the native side touches
-// geometry, so nothing can silently rewrite an arrangement.
-function cardCell(x, y) {
-  return {
-    c: Math.round((x - CARD_ANCHOR) / CARD_GRID),
-    r: Math.round((y - CARD_ANCHOR) / CARD_GRID_Y),
-  };
-}
-
-function cellPx(c, r) {
-  return { x: CARD_ANCHOR + c * CARD_GRID, y: CARD_ANCHOR + r * CARD_GRID_Y };
+function cellPx(c, r, space) {
+  const reg = regionOf(space);
+  return { x: reg.x + CARD_ANCHOR + c * CARD_GRID, y: reg.y + CARD_ANCHOR + r * CARD_GRID_Y };
 }
 
 // NO out-of-bounds protection — by design. The map is the single truth:
 // a card renders EXACTLY where its cell says, even if that cell sits past
-// the screen border. The old render-time clamp (hold the right/bottom edge
-// inside the viewport) was removed at the owner's directive — it nudged a
-// border-hugging card one cell inward on every restart. A user who wants a
-// widget half-off-screen gets exactly that, on every boot, unchanged.
-function placeByCell(el, c, r) {
-  const p = cellPx(c, r);
+// the screen border.
+function placeByCard(el, c, r, space) {
+  const p = cellPx(c, r, space);
   el.style.left = p.x + "px";
   el.style.top = p.y + "px";
 }
 
-// the drag chrome: one landing frame + two vertical + two horizontal guides
+// the drag chrome: one landing frame + alignment guides
 const gridLand = document.createElement("div");
 gridLand.id = "grid-land";
 const gridGuides = [0, 1].flatMap(() => [
@@ -416,6 +808,16 @@ function showLanding(land, el) {
   gridLand.style.height = el.offsetHeight + "px";
 }
 
+// Same frame from KNOWN dimensions — the ghost stream runs at 25 Hz and must
+// never force a layout (offsetWidth) per event.
+function showLandingSized(x, y, w, h) {
+  gridLand.style.display = "block";
+  gridLand.style.left = x + "px";
+  gridLand.style.top = y + "px";
+  gridLand.style.width = w + "px";
+  gridLand.style.height = h + "px";
+}
+
 // alignment lines for the landing rect: sibling edges that coincide with
 // the landing's left/right (vertical guides) or top/bottom (horizontal
 // guides), plus the paper margins. Informational only — nothing pulls.
@@ -423,8 +825,8 @@ const GUIDE_TOL = 1;
 function guideLines(land, el) {
   const L = land.x, T = land.y;
   const R = land.x + el.offsetWidth, B = land.y + el.offsetHeight;
-  const xs = new Map(); // x -> [top, bottom]
-  const ys = new Map(); // y -> [left, right]
+  const xs = new Map();
+  const ys = new Map();
   const addX = (x, t, b) => {
     const s = xs.get(x);
     if (s) { s[0] = Math.min(s[0], t); s[1] = Math.max(s[1], b); } else xs.set(x, [t, b]);
@@ -445,10 +847,10 @@ function guideLines(land, el) {
     if (near(T, st) || near(T, sb)) addY(T, sl, sr);
     else if (near(B, st) || near(B, sb)) addY(B, sl, sr);
   }
-  // the paper anchor — a landing on the cadence anchor sits on the icon margin
-  if (near(L, MARGIN)) addX(L, T, B);
-  if (near(R, innerWidth - MARGIN)) addX(R, T, B);
-  if (near(T, MARGIN)) addY(T, L, R);
+  const reg0 = regionOf(0);
+  if (near(L, reg0.x + MARGIN)) addX(L, T, B);
+  if (near(R, reg0.x + reg0.w - MARGIN)) addX(R, T, B);
+  if (near(T, reg0.y + MARGIN)) addY(T, L, R);
   return { xs: [...xs.entries()].slice(0, 2), ys: [...ys.entries()].slice(0, 2) };
 }
 
@@ -473,16 +875,13 @@ function showGuides(land, el) {
 }
 
 // the shared card drag: raw follow + landing frame + guides + settle.
-// onDrop(col, row) fires once per completed drag with the FINAL GRID CELL —
-// the landing cell, or the nearest cell when Alt held the grid off (the map
-// is cell-based, so even a free drop commits to the closest address).
-function wireCardDrag(el, onDrop) {
+function wireCardDrag(el, space, onDrop) {
   let drag = null;
   el.addEventListener("pointerdown", (e) => {
     if (e.target.closest("textarea, button, input")) return;
     el.classList.remove("settle"); // a fresh grab interrupts any glide
     const r = el.getBoundingClientRect();
-    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, moved: false, land: null };
+    drag = { dx: e.clientX - r.left, dy: e.clientY - r.top, moved: false, land: null, space };
     el.setPointerCapture(e.pointerId);
   });
   el.addEventListener("pointermove", (e) => {
@@ -504,7 +903,7 @@ function wireCardDrag(el, onDrop) {
       hideGridChrome();
       return;
     }
-    drag.land = { x: cardMagnet(x, "x"), y: cardMagnet(y, "y") };
+    drag.land = { x: cardMagnet(x, "x", drag.space), y: cardMagnet(y, "y", drag.space) };
     showLanding(drag.land, el);
     showGuides(drag.land, el);
   });
@@ -524,12 +923,12 @@ function wireCardDrag(el, onDrop) {
     if (commit) {
       // the drop commits the CELL, not pixels — the layout map is the truth
       const p = d.land || { x: el.offsetLeft, y: el.offsetTop };
-      const cell = cardCell(p.x, p.y);
+      const cell = cardCell(p.x, p.y, d.space);
       if (!d.land) {
         // Alt free-drop: the map keeps the nearest CELL, so settle the card
         // onto that cell's pixels too — what you see must be what the map
         // keeps, or the next boot moves the card by up to half a cell
-        const q = cellPx(cell.c, cell.r);
+        const q = cellPx(cell.c, cell.r, d.space);
         if (q.x !== el.offsetLeft || q.y !== el.offsetTop) {
           el.classList.add("settle");
           el.style.left = q.x + "px";
@@ -559,10 +958,10 @@ function makeGrip(onRemove) {
   return head;
 }
 
-function makeNotepad(n) {
+function makeNotepad(n, space) {
   const el = document.createElement("div");
   el.className = "notepad";
-  placeByCell(el, n.col, n.row);
+  placeByCard(el, n.col, n.row, space);
   el.style.width = n.w + "px";
   el.style.height = n.h + "px";
 
@@ -577,24 +976,18 @@ function makeNotepad(n) {
   el.appendChild(ta);
   notepadsEl.appendChild(el);
 
-  // drag by the dark header; geometry persists on drop — Grid 2.0 chrome
-  // (raw follow, landing frame, guides, settle) comes from wireCardDrag
-  wireCardDrag(el, () => saveNotepad(n.id, el, ta));
+  wireCardDrag(el, space, () => saveNotepad(n.id, el, ta, space));
 
-  // text edits persist, debounce 600 ms
   ta.addEventListener("input", () => {
     clearTimeout(npSaveTimers[n.id]);
-    npSaveTimers[n.id] = setTimeout(() => saveNotepad(n.id, el, ta), 600);
+    npSaveTimers[n.id] = setTimeout(() => saveNotepad(n.id, el, ta, space), 600);
   });
 
-  return { el, ta };
+  return { el, ta, space };
 }
 
-// the drop/typing persists the CELL + size — pixels are never stored.
-// Size snaps UP to whole grid boxes and is APPLIED before the commit, so
-// the stored numbers are always exactly what is on screen.
-function saveNotepad(id, el, ta) {
-  const cell = cardCell(el.offsetLeft, el.offsetTop);
+function saveNotepad(id, el, ta, space) {
+  const cell = cardCell(el.offsetLeft, el.offsetTop, space);
   const sw = Math.min(720, Math.max(252, Math.ceil(el.offsetWidth / CARD_GRID) * CARD_GRID));
   const sh = Math.min(540, Math.max(144, Math.ceil(el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y));
   if (sw !== el.offsetWidth) el.style.width = sw + "px";
@@ -609,21 +1002,24 @@ function saveNotepad(id, el, ta) {
   }).catch(() => {});
 }
 
-function renderNotepads(list) {
+function renderNotepads() {
+  if (!view) return;
   const seen = new Set();
-  for (const n of list) {
-    seen.add(n.id);
-    const e = npEl.get(n.id);
-    if (e) {
-      // in-place: never clobber a textarea being edited
-      placeByCell(e.el, n.col, n.row);
-      e.el.style.width = n.w + "px";
-      e.el.style.height = n.h + "px";
-      if (document.activeElement !== e.ta && e.ta.value !== n.text) {
-        e.ta.value = n.text;
+  for (const space of visibleSpaces()) {
+    for (const n of (view.spaces[space] || {}).notepads || []) {
+      seen.add(n.id);
+      const e = npEl.get(n.id);
+      if (e) {
+        e.space = space;
+        placeByCard(e.el, n.col, n.row, space);
+        e.el.style.width = n.w + "px";
+        e.el.style.height = n.h + "px";
+        if (document.activeElement !== e.ta && e.ta.value !== n.text) {
+          e.ta.value = n.text;
+        }
+      } else {
+        npEl.set(n.id, makeNotepad(n, space));
       }
-    } else {
-      npEl.set(n.id, makeNotepad(n));
     }
   }
   for (const [id, e] of [...npEl]) {
@@ -634,10 +1030,9 @@ function renderNotepads(list) {
   }
 }
 
-listen("hushtop:notepads", (e) => renderNotepads(e.payload)).catch(console.error);
+// ---------- widgets ----------------------------------------------------------
 
-const widgetsEl = document.getElementById("widgets");
-const widgets = new Map(); // id -> { el, kind, refs }
+const widgets = new Map(); // id -> { el, kind, refs, space, rec }
 
 let volOpenIds = new Set();  // ids with the session dropdown expanded
 let volTouch = 0;            // last user slider touch (skip poll 1.6s)
@@ -648,17 +1043,10 @@ function volLabel(v) {
 
 // Resize the widget element to exactly its content height. animate=false
 // snaps (boot self-heal); animate=true glides (easeOutCubic, ~220ms).
-// persist=false keeps the snap display-only: the boot measurement runs
-// before webfonts and content settle, and persisting it would rewrite the
-// volume card's stored size on EVERY restart — the one-widget drift. Only
-// user-visible fits (mixer toggle, session list changes) commit geometry.
 function fitVolume(entry, animate, persist) {
   const el = entry.el;
   const from = el.offsetHeight;
   el.style.height = "auto";
-  // Box-to-box: the fitted height rounds UP to whole 18px rows — the card
-  // gets a few px taller, never clips, and always lands exactly on the
-  // ruled lines.
   const target = Math.ceil(el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y;
   el.style.height = from + "px";
   if (!animate || from === target) {
@@ -682,12 +1070,6 @@ function fitVolume(entry, animate, persist) {
 }
 
 function saveWidgetGeom(entry) {
-  // the layout map is the truth: commit the RECORDED cell (never a
-  // rendered position — keeps the commit unambiguous) + the content size.
-  // Sizes are WHOLE GRID BOXES (owner rule: every card fits box-to-box):
-  // snap the measured geometry up, APPLY it so what-you-see is what is
-  // stored, then commit. For the volume card both are already snapped by
-  // fitVolume — these lines are no-ops there.
   const sw = Math.ceil(entry.el.offsetWidth / CARD_GRID) * CARD_GRID;
   const sh = Math.ceil(entry.el.offsetHeight / CARD_GRID_Y) * CARD_GRID_Y;
   if (sw !== entry.el.offsetWidth) entry.el.style.width = sw + "px";
@@ -702,7 +1084,6 @@ function saveWidgetGeom(entry) {
 }
 
 function volumeBody(r) {
-  // readout row: big % + mute-state caption
   const readout = document.createElement("div");
   readout.className = "vol-readout";
   const pct = document.createElement("span");
@@ -721,11 +1102,9 @@ function volumeBody(r) {
   slider.value = 0;
   slider.setAttribute("aria-label", "Master volume");
 
-  // tick ruler under the slider (decorative, pure CSS)
   const ruler = document.createElement("div");
   ruler.className = "vol-ruler";
 
-  // footer: MUTE left, MIXER expander right
   const foot = document.createElement("div");
   foot.className = "vol-foot";
   const mute = document.createElement("button");
@@ -740,23 +1119,36 @@ function volumeBody(r) {
   foot.appendChild(spacer);
   foot.appendChild(arrow);
 
-  const sessions = document.createElement("div");
+  let sessions = document.createElement("div");
   sessions.className = "vol-sessions hidden";
 
-  let lastVol = null; // for mute/restore
-  let lastGet = 0;    // last applied master value
+  let lastGet = null;
+  let muted = false; // the OS mute flag — the same truth the volume flyout uses
 
-  function apply(v, push) {
+  function paint(v) {
     const n = Math.round(v * 100);
     slider.value = n;
     pct.textContent = volLabel(v);
     lastGet = n;
-    const muted = n === 0;
+  }
+
+  function paintMute() {
     mute.classList.toggle("is-muted", muted);
     state.textContent = muted ? "muted" : "master";
+  }
+
+  function apply(v, push) {
+    paint(v);
+    // pushing a positive volume while muted unmutes — same rule the
+    // desktop volume bar follows, so both surfaces stay identical
     if (push) {
       volTouch = Date.now();
       invoke("audio_master_set", { vol: v }).catch(() => {});
+      if (muted && Math.round(v * 100) > 0) {
+        muted = false;
+        paintMute();
+        invoke("audio_mute_set", { muted: false }).catch(() => {});
+      }
     }
   }
 
@@ -765,13 +1157,9 @@ function volumeBody(r) {
   });
 
   mute.addEventListener("click", () => {
-    const cur = slider.value / 100;
-    if (cur > 0) {
-      lastVol = cur;
-      apply(0, true);
-    } else {
-      apply(lastVol == null ? 0.5 : lastVol, true);
-    }
+    muted = !muted;
+    paintMute();
+    invoke("audio_mute_set", { muted }).catch(() => {});
   });
 
   arrow.addEventListener("click", () => {
@@ -782,7 +1170,7 @@ function volumeBody(r) {
       refreshSessions(r);
     } else {
       volOpenIds.delete(r.id);
-      if (r.fit) r.fit(); // collapse back to the compact strip
+      if (r.fit) r.fit();
     }
   });
 
@@ -821,7 +1209,6 @@ function volumeBody(r) {
           row.appendChild(sp);
           sessions.appendChild(row);
         }
-        // rows changed -> the open height must follow
         if (r.fit) r.fit();
       })
       .catch(() => {});
@@ -829,18 +1216,226 @@ function volumeBody(r) {
 
   r.poll = setInterval(() => {
     if (Date.now() - volTouch < 1600) return;
-    invoke("audio_master_get")
-      .then((v) => {
-        const n = Math.round(v * 100);
-        if (n !== lastGet) apply(v, false);
+    invoke("audio_state")
+      .then((st) => {
+        const n = Math.round(st.vol * 100);
+        const m = !!st.muted;
+        if (n !== lastGet || m !== muted) {
+          muted = m;
+          paint(st.vol);
+          paintMute();
+        }
       })
       .catch(() => {});
     if (volOpenIds.has(r.id)) refreshSessions(r);
   }, 2000);
 
-  invoke("audio_master_get").then((v) => apply(v, false)).catch(() => {});
+  // the flyout on the bar, a media key or any other surface that moves the
+  // master volume lands here instantly — no waiting for the poll
+  listen("audio:master", (e) => {
+    const p = e.payload || {};
+    const m = !!p.muted;
+    const v = typeof p.vol === "number" ? p.vol : null;
+    const n = v == null ? null : Math.round(v * 100);
+    if ((n != null && n !== lastGet) || m !== muted) {
+      muted = m;
+      if (n != null) paint(v);
+      paintMute();
+    }
+  }).catch(() => {});
+
+  invoke("audio_state")
+    .then((st) => {
+      muted = !!st.muted;
+      paint(st.vol);
+      paintMute();
+    })
+    .catch(() => {});
 
   return { readout, slider, ruler, foot, sessions, pct };
+}
+
+// ---- brightness (a cousin of the volume card: sun readout, no mixer) -------
+
+let brTouch = 0;
+
+function brightnessBody() {
+  const readout = document.createElement("div");
+  readout.className = "vol-readout";
+  const sun = document.createElement("span");
+  sun.className = "br-sun";
+  sun.innerHTML =
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round">' +
+    '<circle cx="12" cy="12" r="4.4"/><path d="M12 2.6v2.4M12 19v2.4M2.6 12h2.4M19 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>';
+  const pct = document.createElement("span");
+  pct.className = "vol-pct";
+  const state = document.createElement("span");
+  state.className = "vol-state";
+  state.textContent = "display";
+  readout.appendChild(sun);
+  readout.appendChild(pct);
+  readout.appendChild(state);
+
+  const slider = document.createElement("input");
+  slider.type = "range";
+  slider.className = "vol-slider vol-main br-slider";
+  slider.min = 0;
+  slider.max = 100;
+  slider.value = 60;
+  slider.setAttribute("aria-label", "Display brightness");
+
+  const ruler = document.createElement("div");
+  ruler.className = "vol-ruler br-ruler";
+
+  let lastGet = null;
+
+  function apply(v) {
+    pct.textContent = Math.round(v) + "%";
+    slider.value = Math.round(v);
+    lastGet = Math.round(v);
+  }
+
+  slider.addEventListener("input", () => {
+    brTouch = Date.now();
+    pct.textContent = slider.value + "%";
+    invoke("brightness_set", { v: Math.round(slider.value) }).catch(() => {});
+  });
+
+  setInterval(() => {
+    if (Date.now() - brTouch < 1600) return;
+    invoke("brightness_get")
+      .then((v) => {
+        if (v == null) {
+          slider.disabled = true;
+          state.textContent = "n/a";
+          return;
+        }
+        slider.disabled = false;
+        state.textContent = "display";
+        if (Math.round(v) !== lastGet) apply(v);
+      })
+      .catch(() => {});
+  }, 3000);
+
+  invoke("brightness_get")
+    .then((v) => {
+      if (v == null) {
+        slider.disabled = true;
+        state.textContent = "n/a";
+      } else {
+        apply(v);
+      }
+    })
+    .catch(() => {});
+
+  return { readout, slider, ruler, pct };
+}
+
+// ---- effects (snow / leaves / off — one layer over every desktop) ---------
+// Two live picks plus OFF (the only way off). The retired star and the
+// lock-screen farm have no buttons; stale stored values still render and
+// the caption says where they went.
+
+const FX_SVG = {
+  snow:
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">' +
+    '<path d="M12 3v18M4.2 7.5l15.6 9M19.8 7.5l-15.6 9M12 3l-2 2M12 3l2 2M12 21l-2-2M12 21l2-2M4.2 7.5l.5 2.7M4.2 7.5l2.7-.6M19.8 16.5l-.5-2.7M19.8 16.5l-2.7.6M19.8 7.5l-2.7-.6M19.8 7.5l-.5 2.7M4.2 16.5l2.7.6M4.2 16.5l.5-2.7"/></svg>',
+  leaves:
+    // the leaf from the falling-leaves reference (viewBox 0 0 24 32), veins
+    // as a class so page CSS can cut them against the button's live background
+    // — tilted 45° so it reads as falling, not standing
+    '<svg viewBox="0 0 24 32" width="12" height="16" fill="currentColor" stroke="none" style="transform:rotate(45deg)">' +
+    '<path d="M12 0 C 24 8, 24 22, 12 32 C 0 22, 0 8, 12 0 Z"/>' +
+    '<path class="lv" d="M12 3 L12 29" stroke-width="1" fill="none"/>' +
+    '<path class="lv" d="M12 10 L7 14 M12 10 L17 14 M12 18 L6 22 M12 18 L18 22" stroke-width="0.8" fill="none"/>' +
+    '</svg>',
+  off:
+    '<svg viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round">' +
+    '<circle cx="12" cy="12" r="8.2"/><path d="M6.2 17.8 17.8 6.2"/></svg>',
+};
+
+function effectsBody() {
+  const row = document.createElement("div");
+  row.className = "fx-row";
+  const cap = document.createElement("div");
+  cap.className = "fx-cap";
+  cap.textContent = "off";
+
+  const btns = {};
+  for (const kind of ["snow", "leaves", "off"]) {
+    const b = document.createElement("button");
+    b.className = "fx-btn";
+    b.tabIndex = 0;
+    b.setAttribute("aria-label", kind === "off" ? "effects off" : kind + " effect");
+    b.innerHTML = FX_SVG[kind];
+    // A click SETS the effect — no toggle; the OFF button is the only way
+    // off (the old toggle made the snowflake look broken: click snow while
+    // snow was already the stored effect and it silently went off).
+    b.addEventListener("click", () => {
+      const next = kind === "off" ? "none" : kind;
+      ulog("effects: pick " + next);
+      invoke("hushtop_effect_set", { kind: next }).catch(() => {});
+    });
+    btns[kind] = b;
+    row.appendChild(b);
+  }
+
+  function sync(kind) {
+    for (const k of Object.keys(btns)) {
+      btns[k].classList.toggle("active", k === kind || (k === "off" && kind === "none"));
+    }
+    cap.textContent =
+      kind === "none"
+        ? "off"
+        : kind === "star"
+        ? "retired"
+        : kind === "wind"
+        ? "lock screen"
+        : kind;
+  }
+  effectUiHooks.add(sync);
+  sync(fxUserKind);
+
+  return { row, cap };
+}
+
+// ---- second desktop (the spaces switcher) ----------------------------------
+
+function spacesBody() {
+  const seg = document.createElement("div");
+  seg.className = "sp-seg";
+  const btns = [];
+  for (const i of [0, 1]) {
+    const b = document.createElement("button");
+    b.className = "sp-btn";
+    b.textContent = String(i + 1);
+    b.addEventListener("click", () => {
+      if (view && view.dual) return;
+      if ((view ? view.active : 0) === i) return;
+      invoke("hushtop_space_set", { idx: i }).catch(() => {});
+    });
+    btns.push(b);
+    seg.appendChild(b);
+  }
+  const lock = document.createElement("div");
+  lock.className = "sp-lock hidden";
+  lock.innerHTML =
+    '<span class="lock-glyph"><i class="shackle"></i><i class="body"></i><i class="keyhole"></i></span>' +
+    '<span class="sp-lock-text">This widget only works when one monitor is connected</span>';
+
+  function sync(dto) {
+    const dual = !!(dto && dto.dual);
+    lock.classList.toggle("hidden", !dual);
+    seg.classList.toggle("hidden", dual);
+    if (!dual) {
+      const a = dto ? dto.active : 0;
+      for (let i = 0; i < 2; i++) btns[i].classList.toggle("active", i === a);
+    }
+  }
+  spacesUiHooks.add(sync);
+  sync(view);
+
+  return { seg, lock };
 }
 
 let lastStats = { cpu: 0, ram: 0, battery: null, charging: false };
@@ -980,15 +1575,12 @@ function lockBody() {
 
 const MEDIA_VIZ_BARS = 18;
 const MEDIA_VIZ_MAX = 45; // px — band inner height minus its 8px top pad
-// deterministic per-bar spread (0.8..1.0): 18 bars sample 12 native bands,
-// so ~2 bars share a band — this spreads twins without faking energy.
 const MEDIA_VIZ_SPREAD = Array.from(
   { length: MEDIA_VIZ_BARS },
   (_, i) => 0.8 + 0.2 * (((i * 7) % 5) / 4)
 );
 
 function mediaBody(el) {
-  // ---- top zone: full-bleed cover + meta column ---------------------------
   const top = document.createElement("div");
   top.className = "media-top";
 
@@ -1018,7 +1610,6 @@ function mediaBody(el) {
   top.appendChild(coverWrap);
   top.appendChild(meta);
 
-  // ---- band: transport + divider + the visualizer --------------------------
   const band = document.createElement("div");
   band.className = "media-band";
 
@@ -1066,7 +1657,6 @@ function mediaBody(el) {
   band.appendChild(sep);
   band.appendChild(viz);
 
-  // ---- idle: the designed empty card ---------------------------------------
   const empty = document.createElement("div");
   empty.className = "media-empty";
   const emptyInner = document.createElement("div");
@@ -1130,10 +1720,10 @@ function mediaBody(el) {
 
 // ---- widget factory + diff render ---------------------------------------
 
-function makeWidget(w) {
+function makeWidget(w, space) {
   const el = document.createElement("div");
   el.className = "notepad widget " + w.kind;
-  placeByCell(el, w.col, w.row);
+  placeByCard(el, w.col, w.row, space);
   el.style.width = w.w + "px";
   el.style.height = w.h + "px";
 
@@ -1144,9 +1734,6 @@ function makeWidget(w) {
 
   const refs = { };
   if (w.kind === "volume") {
-    // refs itself is the `r` volumeBody closes over: r.id, r.fit and r.poll
-    // all live on the SAME object that lands in the widgets map — the fit
-    // hook works from the widget's own events and the poll is cleanable.
     refs.id = w.id;
     Object.assign(refs, volumeBody(refs));
     el.appendChild(refs.readout);
@@ -1154,6 +1741,19 @@ function makeWidget(w) {
     el.appendChild(refs.ruler);
     el.appendChild(refs.foot);
     el.appendChild(refs.sessions);
+  } else if (w.kind === "brightness") {
+    Object.assign(refs, brightnessBody());
+    el.appendChild(refs.readout);
+    el.appendChild(refs.slider);
+    el.appendChild(refs.ruler);
+  } else if (w.kind === "effects") {
+    Object.assign(refs, effectsBody());
+    el.appendChild(refs.row);
+    el.appendChild(refs.cap);
+  } else if (w.kind === "spaces") {
+    Object.assign(refs, spacesBody());
+    el.appendChild(refs.seg);
+    el.appendChild(refs.lock);
   } else if (w.kind === "clipboard") {
     Object.assign(refs, clipboardBody(w));
     el.appendChild(refs.list);
@@ -1177,34 +1777,56 @@ function makeWidget(w) {
     el.appendChild(refs.empty);
   }
 
-  // drag by the head (buttons/textareas excluded inside the drag guard)
   widgetsEl.appendChild(el);
 
-  // drag by the head — buttons/inputs opt out of the capture (the same
-  // guard that keeps the X button clickable). Grid 2.0: the card follows
-  // the cursor raw while the landing frame + guides show the cadence cell;
-  // the drop saves the CELL the card settled on (the layout map).
-  wireCardDrag(el, (c, r) => {
+  wireCardDrag(el, space, (c, r) => {
     w.col = c; // keep the record current — geom saves commit rec.col/row
     w.row = r;
     invoke("hushtop_widget_save", { id: w.id, col: c, row: r }).catch(() => {});
   });
 
-  const entry = { el, kind: w.kind, refs, rec: w };
+  const entry = { el, kind: w.kind, refs, rec: w, space };
   if (w.kind === "volume") {
-    // the adaptive fit is wired through refs so volumeBody's own events
-    // (mixer toggle, poll re-render) can re-run it once the entry exists
     refs.fit = () => fitVolume(entry, true);
     fitVolume(entry, false, false); // boot snap is display-only — never persist a boot measurement
   }
   return entry;
 }
 
-function renderWidgets(list) {
+// The widget roster a render pass draws: every card of the VISIBLE spaces,
+// plus — single display only — the second-desktop switcher from ANY space
+// (it is global: it rides both desktops, so the control that switches is
+// always on screen). In dual mode each monitor shows its own space, so the
+// switcher simply lives where it was dropped.
+function widgetRoster() {
+  const roster = [];
+  const added = new Set();
+  for (const space of visibleSpaces()) {
+    for (const w of (view.spaces[space] || {}).widgets || []) {
+      if (!added.has(w.id)) {
+        added.add(w.id);
+        roster.push([w, space]);
+      }
+    }
+  }
+  if (view && !view.dual) {
+    for (let s = 0; s < (view.spaces || []).length; s++) {
+      for (const w of (view.spaces[s] || {}).widgets || []) {
+        if (w.kind === "spaces" && !added.has(w.id)) {
+          added.add(w.id);
+          roster.push([w, s]);
+        }
+      }
+    }
+  }
+  return roster;
+}
+
+function renderWidgets() {
+  if (!view) return;
   const seen = new Set();
-  for (const w of list) {
+  for (const [w, space] of widgetRoster()) {
     if (w.kind === "media" && (w.w !== 288 || w.h !== 162)) {
-      // media is a fixed-design card — but still box-to-box (8 x 9 cells)
       w.w = 288;
       w.h = 162;
     }
@@ -1212,11 +1834,12 @@ function renderWidgets(list) {
     const e = widgets.get(w.id);
     if (e) {
       e.rec = w; // keep the record fresh — geom saves commit rec.col/row
-      placeByCell(e.el, w.col, w.row);
+      e.space = space;
+      placeByCard(e.el, w.col, w.row, space);
       e.el.style.width = w.w + "px";
       e.el.style.height = w.h + "px";
     } else {
-      widgets.set(w.id, makeWidget(w));
+      widgets.set(w.id, makeWidget(w, space));
     }
   }
   for (const [id, e] of [...widgets]) {
@@ -1228,13 +1851,6 @@ function renderWidgets(list) {
     }
   }
 }
-
-listen("hushtop:widgets", (e) => renderWidgets(e.payload)).catch(console.error);
-
-// No resize handler, no viewport fetch: placement is a pure map→pixel
-// function (cell × cadence, anchored at 14px), so it is identical at any
-// window size — boot, monitor change, resolution shrink. Nothing to
-// re-apply, nothing to clamp; the map always renders as stored.
 
 listen("hushtop:clipboard", (e) => {
   clipList = e.payload || [];
@@ -1252,10 +1868,6 @@ invoke("clipboard_history")
   })
   .catch(() => {});
 
-// One hush:media broadcast repaints every media widget on the desktop
-// (cover icon, title/artist, transport state, accent). The last payload is
-// kept so a hush:levels tick can tint the visualizer with the SAME accent
-// even between media events.
 let lastMedia = null;
 function paintMedia(m) {
   lastMedia = m || lastMedia;
@@ -1276,3 +1888,269 @@ listen("hush:levels", (e) => {
     }
   }
 }).catch(console.error);
+
+// ---------- the widget ghost (dragged out of the start menu) ----------------
+
+// The ghost carries the widget's REAL body (hushWidgetPreview) at the
+// widget's real size — what follows the cursor is exactly what will land.
+// There is no separate "preview render method" left anywhere: ghost, wipe
+// previews and the start-menu gallery all build the same DOM.
+
+let ghostKind = "";
+
+// Watchdog: the ghost is driven by a start-menu event stream. If that stream
+// ever dies without an explicit off (capture yanked, window vanished, any
+// missed path), the ghost would sit on the desktop forever. Every on-event
+// re-arms this timer; 3.5 s of silence hides the ghost.
+let ghostWatch = 0;
+
+function hideGhost() {
+  if (!ghostEl.classList.contains("hidden")) {
+    ulog("ghost: watchdog hid the ghost (stream went silent)");
+  }
+  clearTimeout(ghostWatch);
+  ghostWatch = 0;
+  ghostEl.classList.add("hidden");
+  ghostEl.className = "notepad widget ghost hidden";
+  ghostEl.replaceChildren();
+  ghostKind = "";
+  hideGridChrome();
+}
+
+listen("hushtop:widget_ghost", (e) => {
+  const p = e.payload || {};
+  if (!p.on) {
+    hideGhost();
+    return;
+  }
+  clearTimeout(ghostWatch);
+  ghostWatch = setTimeout(hideGhost, 3500);
+  ghostEl.className = "notepad widget ghost " + (p.kind || "");
+  if (ghostKind !== (p.kind || "")) {
+    ghostKind = p.kind || "";
+    ghostEl.replaceChildren(hushWidgetPreview(ghostKind));
+  }
+  ghostEl.style.width = p.w + "px";
+  ghostEl.style.height = p.h + "px";
+  ghostEl.style.left = p.x + "px";
+  ghostEl.style.top = p.y + "px";
+  ghostEl.classList.remove("hidden");
+  const space = spaceAtPoint(p.x, p.y);
+  showLandingSized(
+    cardMagnet(p.x, "x", space),
+    cardMagnet(p.y, "y", space),
+    p.w,
+    p.h
+  );
+}).catch(console.error);
+
+// ---------- desktop effects (snow / leaves / star / wind — rain retired) ------
+
+const fx = document.getElementById("fx");
+const fxBk = document.getElementById("fxback");
+
+// The renderer is SHARED (ui/fx.js): the lock screen mounts the same engine
+// on its own canvas, so both stages draw the identical scene. This page
+// only keeps the UI honest — the effects picker mirrors the live kind —
+// and may suspend the desktop effect while the sheet is locked.
+const effectUiHooks = new Set();
+
+let fxSuspended = false; // true while locked — the choreography wants a bare sheet
+
+// The boot gate: the particles are part of the REVEAL, not the skeleton —
+// they wait for the boot choreography (the icons/widgets stage) and fade in
+// with it. Every fxSet caller is coerced to "none" until then.
+let fxBooting = true;
+
+// The lock fade-out: the class drops first (0.6s CSS melt) and the ENGINE
+// stops only after the fade — an instant set("none") would clear the canvas
+// before a single faded frame shows.
+let fxFadeTimer = 0;
+
+// The desktop's OWN effect — the last user/config-driven pick. The lock
+// choreography forces the ENGINE to "none" while locked, but this variable
+// is what the unlock restore replays, so the user's pick survives the
+// round trip by construction (suspension never writes here).
+let fxUserKind = "none";
+
+// The desktop never runs the wind farm — it is the LOCK SCREEN's scene
+// (exclusive, always on, no off switch). Snow and leaves are the desktop's
+// own picks; a stale stored "wind" (or the retired "rain"/"star" — star
+// still renders, rain does not) or anything unknown lands as none/kept per
+// the engine; the engine itself keeps the wind renderer because the
+// lockscreen page mounts this file.
+function desktopFxKind(kind) {
+  return kind === "snow" || kind === "leaves" || kind === "star" ? kind : "none";
+}
+
+function fxSet(kind) {
+  const k = hushFx.set(fxSuspended || fxBooting ? "none" : desktopFxKind(kind));
+  // the canvas owns its own opacity: .on fades the particles in (boot,
+  // unlock, a fresh pick) and out (lock) — the engine only ever starts/stops
+  // under a finished fade
+  fx.classList.toggle("on", k !== "none");
+  for (const hook of effectUiHooks) {
+    try { hook(k); } catch (e) { /* nothing */ }
+  }
+}
+
+hushFx.mount({ back: fxBk, front: fx });
+
+fxUserKind = desktopFxKind((view && view.effect) || "none");
+fxSet(fxUserKind);
+
+// ---------- lock + boot choreography (sweep line, ruled lines, fades) ------
+
+const rulesEl = document.getElementById("rules");
+
+// The sweep — the SAME primitive as the space switch, nothing more: ONE ink
+// line crosses the sheet and the desktop's OWN horizontal ruled lines are
+// erased or revealed in lockstep with it (clip-path inset tracked to the
+// line position). No curtain, no extra elements, no light ink anywhere:
+// the veil is paper-dark from the first frame and the only moving ink is
+// the single line.
+//   dir -1 (lock):        line right -> left, rules erased behind it — the
+//                         sheet goes bare exactly "with the bar".
+//   dir +1 (unlock/boot): line left -> right, rules revealed behind it —
+//                         they slide back in from the left edge.
+const SWEEP_MS = 1500;
+const SWEEP_EASE = "cubic-bezier(0.65, 0, 0.35, 1)";
+
+let sweepAnims = [];
+
+function sweepDesk(dir) {
+  for (const a of sweepAnims) a.cancel();
+  sweepAnims = [];
+  // the line may still carry a space-switch animation (a lock pressed
+  // mid-wipe) — take the element over completely
+  for (const a of wipeLineEl.getAnimations()) a.cancel();
+  // from = whatever the rules layer is clipped to right now (mid-boot
+  // reveal, erased after a lock, or the bare boot start) — the transition
+  // always starts from the true visible state, never snaps.
+  let fromClip = getComputedStyle(rulesEl).clipPath;
+  if (fromClip === "none") {
+    fromClip = dir < 0 ? "inset(0 0% 0 0)" : "inset(0 100% 0 0)";
+  }
+  const toClip = dir < 0 ? "inset(0 100% 0 0)" : "inset(0 0% 0 0)";
+  const fromLeft = dir < 0 ? "100%" : "0%";
+  const toLeft = dir < 0 ? "0%" : "100%";
+  wipeLineEl.classList.add("on");
+  const opts = { duration: SWEEP_MS, easing: SWEEP_EASE, fill: "forwards" };
+  const lineAnim = wipeLineEl.animate(
+    [{ left: fromLeft }, { left: toLeft }],
+    opts
+  );
+  const clipAnim = rulesEl.animate(
+    [{ clipPath: fromClip }, { clipPath: toClip }],
+    opts
+  );
+  sweepAnims = [lineAnim, clipAnim];
+  clipAnim.onfinish = () => {
+    rulesEl.style.clipPath = toClip; // the resting state, held without fill
+    for (const a of sweepAnims) a.cancel();
+    sweepAnims = [];
+    wipeLineEl.classList.remove("on");
+  };
+  return clipAnim;
+}
+
+// Boot: the shell starts on an opaque paper-dark veil (the CSS default for
+// #veil — never light ink), a bare sheet with no rules. The reveal stages:
+// the veil lifts, the single line sweeps left -> right and the ruled lines
+// slide back in behind it, icons and widgets fade in last. Slow on purpose.
+let bootPlayed = false;
+function playBoot() {
+  if (bootPlayed) return;
+  bootPlayed = true;
+  setTimeout(() => {
+    document.body.classList.add("booted");
+    ulog("choreo: boot — background fades in");
+  }, 400);
+  setTimeout(() => {
+    sweepDesk(1);
+    ulog("choreo: boot — the line sweeps left -> right, ruled lines slide in");
+  }, 1200);
+  setTimeout(() => {
+    document.body.classList.add("boot-icons");
+    // the boot reveal is done enough for the sky: the gate lifts here and the
+    // particles FADE IN with the icons/widgets — they are part of the reveal,
+    // never the skeleton (they did not run during the veil/sweep stages)
+    fxBooting = false;
+    fxSet(fxUserKind);
+    ulog("choreo: boot — icons and widgets fade in, desktop effect fades in with them");
+  }, 2750);
+}
+
+// The body carries .boot from script start (before the first paint) so the
+// paper-dark veil + hidden layers are the very first thing ever on screen.
+document.body.classList.add("boot");
+
+// Lock: icons/widgets fade out slowly, the veil calms the sheet, the line
+// sweeps right -> left and erases the ruled lines with it, and the
+// (transparent) lock window rises its ink stack once the sweep is done.
+// The desktop's own effect steps aside for all of it — the sheet the lock
+// choreography draws on must be bare; the lock screen then runs THE WIND
+// FARM (its own scene — always on, no option, no off switch) once the
+// animation is done, and the desktop's choice comes back with the unlock
+// reveal.
+// Unlock: the line sweeps back left -> right with the rules sliding in
+// behind it, the veil lifts, icons/widgets fade in AFTER the sweep — the
+// backend restores the minimized windows last of all.
+listen("lockscreen:show", () => {
+  bootPlayed = true; // a lock supersedes an incomplete boot
+  fxBooting = false; // the gate must never outlive the boot — unlock replays the pick
+  document.body.classList.add("locked", "booted");
+  document.body.classList.remove("boot");
+  // suspend (not clear) the desktop effect: fxSet keeps forcing "none" for
+  // every caller while the flag is up — a stray spaces payload mid-lock
+  // cannot sneak the scene back onto the bare sheet. The PARTICLES melt out
+  // first (the .on class drops, 0.6s CSS), and the engine stops only after
+  // the fade — an instant clear would make them vanish mid-air.
+  fxSuspended = true;
+  clearTimeout(fxFadeTimer);
+  fx.classList.remove("on");
+  fxFadeTimer = setTimeout(() => {
+    if (fxSuspended) fxSet("none"); // superseded by an unlock → the timer no-ops
+  }, 700);
+  ulog("choreo: lock — desktop effect fades out, then suspends");
+  // the icons/widgets fade out first (0.9s); the line starts crossing once
+  // they are half-gone — the erase reads as the second beat of one motion
+  setTimeout(() => sweepDesk(-1), 550);
+  ulog("choreo: lock — icons fade out, then the line erases the rules right -> left");
+}).catch(() => {});
+
+listen("lockscreen:hide", () => {
+  document.body.classList.add("unlocking");
+  document.body.classList.remove("locked");
+  sweepDesk(1);
+  ulog("choreo: unlock — the line sweeps back left -> right, rules slide in");
+  setTimeout(() => {
+    document.body.classList.remove("unlocking");
+    ulog("choreo: unlock — icons and widgets fade in");
+  }, SWEEP_MS);
+  // the desktop effect returns AFTER the sweep — the exact mirror of the
+  // lock (the lock screen's wind farm starts when the lock animation is
+  // done). fxSuspended holds through the sweep, so even a stray spaces
+  // payload mid-unlock cannot dress the sheet while the line is still
+  // crossing. The restore replays fxUserKind — the user's own pick,
+  // untouched by the suspension — and fxSet fades the particles back in.
+  setTimeout(() => {
+    fxSuspended = false;
+    fxSet(fxUserKind);
+    ulog("choreo: unlock — desktop effect restored (" + fxUserKind + ")");
+  }, SWEEP_MS);
+}).catch(() => {});
+
+// The overlay is TRULY gone (the backend hides the lock window once the
+// sweep is over). This is the authoritative end-of-lock: the suspension
+// cannot outlive it, the desktop's own effect is re-asserted, and the
+// engine is KICKED — a render loop that stalled while the transparent
+// overlay covered the webview restarts right here. Whatever went wrong
+// under the overlay, "unlock leaves the desktop bare" cannot survive
+// this event.
+listen("lockscreen:gone", () => {
+  fxSuspended = false;
+  fxSet(fxUserKind);
+  hushFx.kick();
+  ulog("choreo: unlock — overlay gone, desktop effect re-asserted (" + fxUserKind + ")");
+}).catch(() => {});

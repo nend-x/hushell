@@ -49,8 +49,20 @@ body {
   position: fixed;
   inset: 0;
   background-color: var(--paper);
-  /* black ruled lines every 36px — the two-line icon grid (72px) lands
-     exactly on every second line */
+  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+  user-select: none;
+  cursor: default;
+  -webkit-user-drag: none;
+}
+
+/* The horizontal ruled lines live on their own layer (z 0, under every
+   other layer): the lock/boot choreography erases and reveals them with
+   the sweep line via clip-path. They cannot stay on #paper's background —
+   a mask there would take the paper COLOR with it. */
+#rules {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
   background-image: repeating-linear-gradient(
     to bottom,
     transparent 0,
@@ -59,16 +71,18 @@ body {
     var(--ruled) 36px
   );
   background-position: 0 14px;
-  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
-  user-select: none;
-  cursor: default;
-  -webkit-user-drag: none;
+  pointer-events: none;
+}
+/* boot: the sheet starts bare — the sweep line reveals the rules as it
+   crosses (same vocabulary as the space-switch wipe) */
+body.boot #rules {
+  clip-path: inset(0 100% 0 0);
 }
 
 /* while a card is being arranged, reveal the cadence: vertical ghosts on
    the 36px rhythm + 14px anchor as the horizontal rules (which stay on at
-   full strength) and horizontal ghosts on the 18px vertical snap step —
-   both real grids become visible while a drag happens */
+   full strength on #rules) and horizontal ghosts on the 18px vertical
+   snap step — both real grids become visible while a drag happens */
 #paper.grid-on {
   background-image:
     repeating-linear-gradient(
@@ -91,6 +105,11 @@ body {
 #icons {
   position: absolute;
   inset: 0;
+  /* z5 is load-bearing: the effects landscape (#fxback) sits at z2 and the
+     whole upper stack (notes 20, widgets 21, veil 28, fx 40) is sized
+     against this number — with z auto the icons lose the z-order fight and
+     the wind farm paints OVER them */
+  z-index: 5;
 }
 
 /* ---- icon cells ------------------------------------------------------- */
@@ -875,4 +894,309 @@ html.theming *::after {
   background: var(--ink-2);
   border: 2px solid transparent;
   background-clip: padding-box;
+}
+
+/* ---- spaces layers + wipe ----------------------------------------------- */
+
+#icons-next {
+  position: absolute;
+  inset: 0;
+  z-index: 32; /* above the grid chrome (30), below fx (40) */
+  display: none;
+  pointer-events: none;
+}
+#icons-next.on { display: block; }
+
+#wipe-line {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  z-index: 34; /* above the veil (28) — the line rides the choreography;
+                  above icons-next (32) for the space switch too */
+  display: none;
+  background: var(--ink);
+  box-shadow: -14px 0 22px -6px color-mix(in srgb, var(--ink) 55%, transparent);
+  pointer-events: none;
+}
+#wipe-line.on { display: block; }
+
+/* ---- the veil + the sweep choreography (lock + boot) ---------------------- */
+
+/* The veil starts as an opaque PAPER sheet — dark in the dark palette; it
+   must never be var(--ink) (light in the dark theme — that was the white
+   flash at launch). The boot reveal lifts it (the background "fades in").
+   The locked state calms the sheet under the lock UI with the same dark
+   wash. z 28: above icons (5), notes (20) and widgets (21). */
+#veil {
+  position: absolute;
+  inset: 0;
+  z-index: 28;
+  background: var(--paper);
+  opacity: 1;
+  pointer-events: none;
+  transition: opacity 1.2s ease;
+}
+body.booted #veil { opacity: 0; }
+body.locked #veil {
+  opacity: 0.62;
+  transition: opacity 0.9s ease;
+}
+/* unlock: the wash lifts while the line sweeps the rules back in */
+body.unlocking #veil {
+  opacity: 0;
+  transition: opacity 1.1s ease;
+}
+
+/* Icon/widget layers fade in and out with the lock/boot states — slow,
+   cinematic fades (0.9s), never the old 0.45s blink. */
+#icons,
+#notepads,
+#widgets {
+  transition: opacity 0.9s ease;
+}
+body.locked #icons,
+body.locked #notepads,
+body.locked #widgets {
+  opacity: 0;
+}
+/* boot: hidden until the sweep has passed, then faded in */
+body.boot #icons,
+body.boot #notepads,
+body.boot #widgets {
+  opacity: 0;
+  transition: none;
+}
+body.boot.boot-icons #icons,
+body.boot.boot-icons #notepads,
+body.boot.boot-icons #widgets {
+  opacity: 1;
+  transition: opacity 0.9s ease;
+}
+/* unlock: hold the layers invisible while the line sweeps the rules back,
+   release when it finishes — the fade-in starts on schedule, after the
+   sweep, exactly like the boot reveal */
+body.unlocking #icons,
+body.unlocking #notepads,
+body.unlocking #widgets {
+  opacity: 0;
+  transition: none;
+}
+
+/* ---- the widget ghost dragged out of the start menu ---------------------- */
+
+/* The ghost is a real .notepad.widget card carrying the widget's REAL body
+   (hushWidgetPreview) at the widget's real size: no padding overrides, no
+   mock vocabulary — what follows the cursor is exactly what will land. */
+
+#ghost {
+  z-index: 31;
+  opacity: 0.62;
+  pointer-events: none;
+}
+#ghost.hidden { display: none; }
+
+/* ---- the effects canvases — two layers -----------------------------------
+
+   #fxback is the LANDSCAPE (the wind farm): paper-filled hills and turbines
+   below the icons/widgets — wallpaper that never covers the user's stuff.
+   #fx stays the foreground particle layer (snow / stars) above everything. */
+
+#fxback {
+  position: absolute;
+  inset: 0;
+  z-index: 2; /* above the ruled lines (0), below icons (5) */
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+
+#fx {
+  position: absolute;
+  inset: 0;
+  z-index: 40; /* above grid chrome (30) + widgets (21), below menus (50) */
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+  /* the particles are part of the reveal: they start invisible and every
+     start/stop rides the .on fade (boot in, lock out, unlock back in) —
+     nothing ever pops or vanishes mid-air */
+  opacity: 0;
+  transition: opacity 0.6s ease;
+}
+#fx.on {
+  opacity: 1;
+}
+
+/* ---- marquee (rubber-band selection) ------------------------------------- */
+
+#marquee {
+  position: absolute;
+  z-index: 44;
+  display: none;
+  border: 1px solid var(--ink);
+  background: color-mix(in srgb, var(--ink) 5%, transparent);
+  pointer-events: none;
+}
+#marquee.on { display: block; }
+
+/* ---- the sort menu (uiexample paper, second instance) -------------------- */
+
+#sort-menu {
+  position: absolute;
+  min-width: 168px;
+  background: var(--paper);
+  border: 1px solid var(--ink);
+  box-shadow: var(--shadow-card);
+  padding: 4px 0;
+  z-index: 52; /* above the regular menu — it opens from it */
+}
+#sort-menu.hidden { display: none; }
+#sort-menu .mi {
+  padding: 6px 18px 6px 14px;
+  font-size: 12.5px;
+  color: var(--ink);
+  display: flex;
+  justify-content: space-between;
+  gap: 18px;
+}
+#sort-menu .mi:hover {
+  background: var(--ink);
+  color: var(--paper);
+}
+
+/* ---- the second-desktop widget ------------------------------------------- */
+
+.sp-seg {
+  display: flex;
+  gap: 8px;
+  padding: 10px 12px;
+  flex: 1;
+  align-items: stretch;
+}
+.sp-btn {
+  flex: 1;
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  font: 700 15px/1 "Geist", "Segoe UI", system-ui, sans-serif;
+  padding: 8px 0;
+  cursor: pointer;
+}
+.sp-btn:hover {
+  background: var(--hover);
+}
+.sp-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+.sp-seg.hidden { display: none; }
+.sp-lock {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 12px;
+  color: var(--ink-2);
+}
+.sp-lock.hidden { display: none; }
+.sp-lock .lock-glyph {
+  position: relative;
+  width: 18px;
+  height: 24px;
+  flex: 0 0 auto;
+}
+.sp-lock .lock-glyph .shackle {
+  position: absolute;
+  top: 0;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 12px;
+  height: 9px;
+  border: 2px solid var(--ink-2);
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+}
+.sp-lock .lock-glyph .body {
+  position: absolute;
+  top: 8px;
+  left: 0;
+  width: 18px;
+  height: 14px;
+  background: var(--ink-2);
+}
+.sp-lock .lock-glyph .keyhole {
+  position: absolute;
+  top: 12px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 3px;
+  height: 5px;
+  background: var(--paper);
+}
+.sp-lock-text {
+  font-size: 10px;
+  line-height: 1.5;
+  letter-spacing: 0.2px;
+}
+
+/* ---- the effects widget --------------------------------------------------- */
+
+.fx-row {
+  display: flex;
+  gap: 8px;
+  padding: 9px 12px 4px;
+}
+.fx-btn {
+  flex: 1;
+  height: 30px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: 1px solid var(--ink);
+  color: var(--ink);
+  cursor: pointer;
+  padding: 0;
+}
+.fx-btn:hover {
+  background: var(--hover);
+}
+.fx-btn.active {
+  background: var(--ink);
+  color: var(--paper);
+}
+/* the leaf glyph's veins — cut out against the button's live background
+   (ink leaf on paper → paper veins; the active flip swaps both) */
+.fx-btn .lv {
+  stroke: var(--paper);
+}
+.fx-btn.active .lv {
+  stroke: var(--ink);
+}
+.fx-cap {
+  padding: 2px 12px 9px;
+  font-size: 9px;
+  letter-spacing: 1.6px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+
+/* ---- the brightness widget ------------------------------------------------ */
+
+.br-sun {
+  color: var(--ink);
+  display: inline-flex;
+}
+.br-slider:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+.br-ruler {
+  background: repeating-linear-gradient(
+    to right,
+    var(--track) 0,
+    var(--track) 1px,
+    transparent 1px,
+    transparent 5%
+  );
 }

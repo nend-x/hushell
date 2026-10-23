@@ -41,15 +41,15 @@
             <span class="box-name">Search</span>
             <span class="box-sub">apps &middot; files</span>
           </button>
-          <button class="box" id="box-controls">
-            <span class="glyph glyph-controls"><i></i><i></i><i></i></span>
-            <span class="box-name">Controls</span>
+          <button class="box" id="box-options">
+            <span class="glyph glyph-options"><i></i><i></i><i></i></span>
+            <span class="box-name">Options</span>
             <span class="box-sub">widgets &middot; shell</span>
           </button>
-          <button class="box" id="box-pinned">
-            <span class="glyph glyph-pinned"><i></i><i></i><i></i></span>
-            <span class="box-name">Soon</span>
-            <span class="box-sub"></span>
+          <button class="box" id="box-widgets">
+            <span class="glyph glyph-widgets"><i></i><i></i><i></i><i></i></span>
+            <span class="box-name">Widgets</span>
+            <span class="box-sub">drag one out</span>
           </button>
         </div>
         <footer id="landing-foot">
@@ -74,22 +74,13 @@
         <div id="search-hint" class="hidden">nothing found</div>
       </section>
 
-      <!-- controls -->
-      <section id="view-controls" class="view">
+      <!-- options -->
+      <section id="view-options" class="view">
         <div class="view-bar">
-          <button class="back" id="controls-back" aria-label="Back"><i></i><i></i></button>
-          <span class="view-title">Controls</span>
+          <button class="back" id="options-back" aria-label="Back"><i></i><i></i></button>
+          <span class="view-title">Options</span>
         </div>
-        <div id="controls-scroll">
-          <div class="group-title">add a widget</div>
-          <div class="wgrid">
-            <button class="wbtn" data-kind="notes">Notes</button>
-            <button class="wbtn" data-kind="volume">Volume</button>
-            <button class="wbtn" data-kind="clipboard">Clipboard</button>
-            <button class="wbtn" data-kind="stats">System stats</button>
-            <button class="wbtn" data-kind="lock">Lock</button>
-            <button class="wbtn" data-kind="media">Media</button>
-          </div>
+        <div id="options-scroll">
           <div class="sep"></div>
           <div class="row row-input">
             <span class="row-label">Lock password</span>
@@ -102,6 +93,12 @@
             <span class="row-label">Lock hotkey</span>
             <span class="row-note" id="lockhotkey-state">alt + l</span>
             <button class="switch" id="sw-lockhotkey" aria-label="Toggle the alt+l lock hotkey"><i></i></button>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <span class="row-label">Burn-in protection</span>
+            <span class="row-note" id="lockburn-state">lock screen &middot; 1 min idle</span>
+            <button class="switch" id="sw-lockburn" aria-label="Toggle the lock screen burn-in shield"><i></i></button>
           </div>
           <div class="sep"></div>
           <div class="row">
@@ -119,6 +116,18 @@
             <span class="row-label">Shut down shell</span>
             <span class="row-note">restore the stock taskbar</span>
           </button>
+        </div>
+      </section>
+
+      <!-- widgets (third tab): the gallery -> drag out onto the desktop -->
+      <section id="view-widgets" class="view">
+        <div class="view-bar">
+          <button class="back" id="widgets-back" aria-label="Back"><i></i><i></i></button>
+          <span class="view-title">Widgets</span>
+        </div>
+        <div id="widgets-scroll">
+          <div id="wg-grid"></div>
+          <div id="wg-hint">press one and drag it onto the desktop</div>
         </div>
       </section>
 
@@ -141,6 +150,7 @@
     <div id="menu" class="hidden"></div>
   </div>
   <script src="theme.js"></script>
+  <script src="wpreview.js"></script>
   <script src="startmenu.js"></script>
 </body>
 </html>

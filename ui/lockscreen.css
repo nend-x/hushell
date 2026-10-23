@@ -1,29 +1,18 @@
-/* Geist (variable 100..900, latin subset) — the shell-wide UI font. */
-@font-face {
-  font-family: "Geist";
-  src: url("fonts/Geist-latin.woff2") format("woff2");
-  font-weight: 100 900;
-  font-style: normal;
-  font-display: swap;
-}
+/* lockscreen — the lock UI on a TRANSPARENT window.
+   The desktop beneath plays the choreography (icons fade out, the single
+   sweep line erases the ruled lines, the dark veil calms the sheet); this
+   page is only the quiet ink stack floating on it: clock, padlock, word-
+   mark, password line. The shell is dark-only — INK IS LIGHT (#eceade on
+   #1b1b1f paper). Black ink here was the old light-theme leftover that
+   vanished into the dark sheet. */
 
-:root {
-  --paper: #f1efe8;
-  --ink: #111;
-  --ink-2: rgba(0, 0, 0, 0.45);
-  --stroke: rgba(0, 0, 0, 0.35);
-  --stroke-soft: rgba(0, 0, 0, 0.14);
-  --field: #f8f6f0;
-  --err: #b3261e;
-}
-:root[data-theme="dark"] {
-  --paper: #1b1b1f;
-  --ink: #eceade;
-  --ink-2: rgba(236, 234, 222, 0.5);
-  --stroke: rgba(236, 234, 222, 0.35);
-  --stroke-soft: rgba(236, 234, 222, 0.14);
-  --field: #232328;
-  --err: #ff6f61;
+html,
+body {
+  margin: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent; /* the whole point — the desktop shows through */
 }
 
 *,
@@ -32,140 +21,187 @@
   box-sizing: border-box;
 }
 
-html, body {
-  margin: 0;
-  width: 100%;
-  height: 100%;
-  overflow: hidden;
-  background: var(--paper);
-  color: var(--ink);
-  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
-  user-select: none;
-  cursor: default;
-}
-
-/* the page itself is never animated by the shell's theme gate — the lock
-   must be legible at every instant (no 700 ms color glide on a lock) */
-html.theming #lock > * {
-  transition: none !important;
-}
-
 #lock {
-  position: absolute;
+  position: fixed;
   inset: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
   justify-content: center;
-  gap: 0;
+  font-family: "Geist", "Segoe UI", system-ui, sans-serif;
+  color: #eceade;
+  opacity: 0;
+  transform: translateY(14px);
+  transition: opacity 0.7s ease 1.75s, transform 0.7s ease 1.75s;
+  /* the 1.75s delay: the desktop plays icons-fade then the 1.5s sweep
+     (starting at 0.55s) — the stack rises as the line finishes crossing */
+  user-select: none;
+}
+#lock.in {
+  opacity: 1;
+  transform: none;
+}
+#lock.out {
+  opacity: 0;
+  transform: translateY(-10px);
+  transition: opacity 0.4s ease, transform 0.4s ease;
 }
 
-/* ---------- drawn padlock (the shell's glyph language) ---------- */
+/* ---- clock ---- */
+
+#clock {
+  font-size: 44px;
+  font-weight: 200;
+  letter-spacing: 2px;
+  font-variant-numeric: tabular-nums;
+  margin-bottom: 34px;
+}
+
+/* ---- padlock (the same glyph the desktop lock widget draws) ---- */
 
 #lock-glyph {
   position: relative;
-  width: 34px;
-  height: 44px;
-  margin-bottom: 34px;
+  width: 30px;
+  height: 40px;
+  display: block;
+  margin-bottom: 30px;
 }
 #lock-glyph .shackle {
   position: absolute;
   top: 0;
   left: 50%;
   transform: translateX(-50%);
-  width: 22px;
-  height: 18px;
-  border: 2.5px solid var(--ink);
+  width: 20px;
+  height: 17px;
+  border: 3px solid #eceade;
   border-bottom: none;
-  border-radius: 11px 11px 0 0;
+  border-radius: 10px 10px 0 0;
 }
 #lock-glyph .body {
   position: absolute;
-  top: 16px;
+  top: 14px;
   left: 0;
-  width: 34px;
-  height: 26px;
-  background: var(--ink);
+  width: 30px;
+  height: 24px;
+  background: #eceade;
 }
 #lock-glyph .keyhole {
   position: absolute;
-  top: 25px;
+  top: 22px;
   left: 50%;
   transform: translateX(-50%);
-  width: 6px;
-  height: 10px;
-  background: var(--paper);
+  width: 5px;
+  height: 9px;
+  background: #1b1b1f;
 }
 
-/* ---------- clock + date ---------- */
-
-#clock {
-  font-size: 76px;
-  font-weight: 200;
-  letter-spacing: 2px;
-  line-height: 1;
-  font-variant-numeric: tabular-nums;
-}
-#date {
-  margin-top: 10px;
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 3px;
-  text-transform: uppercase;
-  color: var(--ink-2);
-}
-
-/* ---------- password line ---------- */
+/* ---- wordmark + hint: removed (too childish) — the padlock speaks for itself */
 
 #unlock-form {
-  margin-top: 56px;
   display: flex;
   flex-direction: column;
   align-items: center;
+  margin: 0;
 }
+
 #password {
   width: 240px;
-  padding: 8px 2px;
+  padding: 6px 2px;
   background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--stroke);
+  border: 0;
+  border-bottom: 2px solid rgba(236, 234, 222, 0.85);
+  border-radius: 0;
   outline: none;
   text-align: center;
-  font: 15px/1.4 "Geist", "Segoe UI", system-ui, sans-serif;
+  font-family: inherit;
+  font-size: 19px;
+  font-weight: 500;
   letter-spacing: 3px;
-  color: var(--ink);
-  caret-color: var(--ink);
+  color: #eceade;
+  caret-color: #eceade;
 }
 #password::placeholder {
-  color: var(--ink-2);
+  color: rgba(236, 234, 222, 0.32);
   letter-spacing: 1px;
+  font-weight: 400;
 }
 #password:focus {
-  border-bottom-color: var(--ink);
+  border-bottom-color: #f4f1e6;
 }
 #password.bad {
-  border-bottom-color: var(--err);
+  border-bottom-color: #e0524a;
 }
 
 #unlock-form.shake {
-  animation: lock-shake 260ms linear;
+  animation: lock-shake 0.36s ease;
 }
 @keyframes lock-shake {
-  0% { transform: translateX(0); }
-  20% { transform: translateX(-7px); }
-  40% { transform: translateX(6px); }
-  60% { transform: translateX(-4px); }
+  0%, 100% { transform: translateX(0); }
+  20% { transform: translateX(-9px); }
+  40% { transform: translateX(8px); }
+  60% { transform: translateX(-5px); }
   80% { transform: translateX(3px); }
-  100% { transform: translateX(0); }
 }
-
-/* ---------- brand footer ---------- */
 
 #lock-brand {
   position: absolute;
-  bottom: 22px;
-  font-size: 11px;
+  bottom: 26px;
+  font-size: 10px;
   font-weight: 600;
   letter-spacing: 3px;
-  color: var(--ink-2);
+  text-transform: uppercase;
+  color: rgba(236, 234, 222, 0.3);
+}
+
+/* ---- the lock screen's own effect --------------------------------------- */
+
+/* The SAME engine the desktop runs (ui/fx.js), on one canvas of its own —
+   the landscape (wind) and the particles (snow) both paint here; there are
+   no icons to protect on a lock screen. The kind is the options choice,
+   read fresh at every show and started only when the lock animation is
+   done — the choreography plays out on a bare sheet. The canvas fades so
+   the scene never pops in over the sweep. */
+#fx {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  z-index: 0; /* beneath the ink stack (#lock), far beneath #burn (10) */
+  opacity: 0;
+  transition: opacity 0.6s ease;
+  pointer-events: none;
+}
+#fx.on {
+  opacity: 1;
+}
+
+/* ---- the OLED burn shield ----------------------------------------------- */
+
+/* A minute of silence on the lock screen and a full-black frame fades in —
+   static bright pixels are what burn an OLED panel. It covers EVERYTHING
+   (clock, padlock, field, the desktop beneath this transparent window).
+   Any KEYBOARD input fades it back out; the mouse deliberately does not —
+   wiggling the pointer changes nothing on screen, so it must not wake it. */
+#burn {
+  position: fixed;
+  inset: 0;
+  z-index: 10; /* above #lock — when it is up, nothing else is visible */
+  background: #000;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.6s ease; /* the fade-OUT speed */
+}
+#burn.on {
+  opacity: 1;
+  transition: opacity 1.2s ease; /* the fade-IN is slow and deliberate */
+}
+
+/* The shield takes the cursor with it: a lone pointer floating on the black
+   frame is exactly the static artifact this shield exists to prevent. The
+   universal selector wins over the text caret cursor the password field
+   would otherwise keep reporting (the field below is still the hover target
+   — the shield itself is pointer-events: none). */
+body.burning,
+body.burning * {
+  cursor: none !important;
 }

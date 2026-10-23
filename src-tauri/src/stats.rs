@@ -117,7 +117,12 @@ pub unsafe fn beat(app: &AppHandle, s: &mut Shared, beats: u64) {
     if beats % 20 != 0 {
         return;
     }
-    if !s.cfg.widgets.iter().any(|w| w.kind == "stats") {
+    if !s
+        .cfg
+        .spaces
+        .iter()
+        .any(|sp| sp.widgets.iter().any(|w| w.kind == "stats"))
+    {
         return;
     }
     let st = sample();

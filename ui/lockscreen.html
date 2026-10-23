@@ -14,7 +14,7 @@
         if (t && t.core && t.core.invoke) {
           t.core.invoke("startmenu_ui_error", { msg: "lockscreen: " + String(m) + " @" + (l || 0) + ":" + (c || 0) });
         }
-      } catch (e) { /* nothing */ }
+      } catch (e) { /* bridge missing — nothing to report to */ }
       return false;
     };
     window.addEventListener("load", function () {
@@ -26,11 +26,19 @@
   </script>
 </head>
 <body>
+  <!-- The window is TRANSPARENT: the desktop behind it plays the lock
+       choreography (icons fade out, the sweep line erases the ruled lines,
+       the dark veil calms the sheet). This page is the lock screen's OWN
+       effect canvas (the engine the desktop runs — the kind is the options
+       choice, started only once the lock animation is done) plus the lock
+       UI itself (clock, padlock, password line) — and the OLED burn shield,
+       a black frame that fades in after a minute of silence. -->
+  <canvas id="fx" aria-hidden="true"></canvas>
+  <div id="burn" aria-hidden="true"></div>
   <div id="lock">
-    <div id="lock-glyph" aria-hidden="true"><i class="shackle"></i><i class="body"></i><i class="keyhole"></i></div>
-
     <div id="clock" aria-live="off">--:--</div>
-    <div id="date">&nbsp;</div>
+
+    <div id="lock-glyph" aria-hidden="true"><i class="shackle"></i><i class="body"></i><i class="keyhole"></i></div>
 
     <form id="unlock-form" autocomplete="off">
       <input id="password" type="password" placeholder="password" spellcheck="false" autocomplete="off" />
@@ -39,6 +47,7 @@
     <footer id="lock-brand">hushell</footer>
   </div>
   <script src="theme.js"></script>
+  <script src="fx.js"></script>
   <script src="lockscreen.js"></script>
 </body>
 </html>

@@ -71,7 +71,7 @@ fn verify(app: &AppHandle, password: &str) -> bool {
     hash_password(&s.cfg.lock_salt, password) == s.cfg.lock_hash
 }
 
-/// The start menu controls row. Empty password = clear the lock password.
+/// The start menu options row. Empty password = clear the lock password.
 pub fn password_set(app: &AppHandle, password: &str) {
     let st = app.state::<crate::AppShared>();
     let mut s = crate::util::lock_shared(&st.0);
@@ -113,12 +113,29 @@ pub fn lock(app: &AppHandle) {
         let mut s = crate::util::lock_shared(&st.0);
         crate::thumbs::volfly_hide_with(app, &mut s);
     }
+    // The desktop takes the stage: every foreign top-level window steps
+    // aside (the shell's own windows and the wallpaper hosts are excluded
+    // by the Alt-Tab filter). The list is what a verified unlock restores —
+    // the boot sweep intentionally records nothing (boot cleanup is not a
+    // lock), and an already-iconic window is left alone and not recorded.
+    {
+        let swept = crate::tasks::minimize_all_except_shell();
+        let st = app.state::<crate::AppShared>();
+        let mut s = crate::util::lock_shared(&st.0);
+        log(&format!(
+            "lockscreen: minimized {} window(s) for the lock",
+            swept.len()
+        ));
+        s.lock_minimized = swept;
+    }
     let a2 = app.clone();
     let _ = app.run_on_main_thread(move || {
         // Full geometry assert (places over the virtual screen, TOPMOST,
         // SWP_SHOWWINDOW) — then the explicit webview show + focus on top
         // of it (the startmenu convention: the controller must agree the
         // window is visible, and the password field must own the keyboard).
+        // The window is TRANSPARENT now — hushtop beneath it plays the
+        // icon fade + the ruled-line curtain on the lockscreen:show event.
         main_assert(&a2);
         if let Some(w) = a2.get_webview_window("lockscreen") {
             let _ = w.show();
@@ -141,48 +158,84 @@ pub fn unlock(app: &AppHandle, password: &str) -> Result<(), String> {
         return Err("wrong password".into());
     }
     LOCKED.store(false, Ordering::SeqCst);
-    if let Some(w) = app.get_webview_window("lockscreen") {
-        let _ = w.hide();
-    }
+    // The return choreography first: the lock UI fades out (this page
+    // listens for the event), hushtop sweeps the curtain back left -> right
+    // and fades the icons/widgets in — the window itself stays up (its
+    // content is transparent by then) so the reveal is never cut short.
     let _ = app.emit("lockscreen:hide", ());
     let a2 = app.clone();
-    let _ = app.run_on_main_thread(move || {
-        // Restore EVERY bar the lock parked — the primary plus every
-        // secondary strip. Raw ShowWindow + TOPMOST re-raise (same
-        // primitive the fullscreen-hide path uses; tao flag rewrites are
-        // avoided on purpose).
-        let st = a2.state::<crate::AppShared>();
-        let ids: Vec<isize> = {
-            let s = crate::util::lock_shared(&st.0);
-            let mut v = vec![s.hwnd_bar];
-            v.extend(s.sec_bars.iter().map(|b| b.hwnd));
-            v
-        };
-        for id in ids {
-            if id != 0 {
-                unsafe {
-                    let h = HWND(id as _);
-                    if IsWindow(h).as_bool() {
-                        let _ = ShowWindow(h, SW_SHOW);
-                        let _ = SetWindowPos(
-                            h,
-                            HWND_TOPMOST,
-                            0,
-                            0,
-                            0,
-                            0,
-                            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                        );
+    let _ = std::thread::spawn(move || {
+        // The choreography on the desktop: the sweep (1500 ms) crosses the
+        // sheet, then the icons/widgets fade in (900 ms). The transparent
+        // overlay goes first — its ink stack has already faded (.out) by
+        // the time the sweep finishes, so nothing is cut short.
+        std::thread::sleep(std::time::Duration::from_millis(1700));
+        let a3 = a2.clone(); // a2 stays the dispatcher handle — a3 goes inside
+        let _ = a2.run_on_main_thread(move || {
+            if let Some(w) = a3.get_webview_window("lockscreen") {
+                let _ = w.hide();
+            }
+            // The overlay is GONE — tell the desktop. hushtop re-asserts its
+            // own effect on this event and kicks the shared engine: a loop
+            // that stalled while the (transparent) overlay covered the
+            // webview restarts the moment the desktop is truly visible
+            // again, so "unlock leaves the desktop bare" cannot happen.
+            let _ = a3.emit("lockscreen:gone", ());
+            // Restore EVERY bar the lock parked — the primary plus every
+            // secondary strip. Raw ShowWindow + TOPMOST re-raise (same
+            // primitive the fullscreen-hide path uses; tao flag rewrites are
+            // avoided on purpose). The bars come back while the icon fade
+            // is still playing — they are shell chrome, not parked windows.
+            let st = a3.state::<crate::AppShared>();
+            let ids: Vec<isize> = {
+                let s = crate::util::lock_shared(&st.0);
+                let mut v = vec![s.hwnd_bar];
+                v.extend(s.sec_bars.iter().map(|b| b.hwnd));
+                v
+            };
+            for id in ids {
+                if id != 0 {
+                    unsafe {
+                        let h = HWND(id as _);
+                        if IsWindow(h).as_bool() {
+                            let _ = ShowWindow(h, SW_SHOW);
+                            let _ = SetWindowPos(
+                                h,
+                                HWND_TOPMOST,
+                                0,
+                                0,
+                                0,
+                                0,
+                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                            );
+                        }
                     }
                 }
             }
-        }
-        if let Some(w) = a2.get_webview_window("taskbar") {
-            let _ = w.show();
-        }
-        log("lockscreen: all bars restored");
+            if let Some(w) = a3.get_webview_window("taskbar") {
+                let _ = w.show();
+            }
+            log("lockscreen: all bars restored");
+        });
+        // The windows the LOCK minimized come back last — after the sweep
+        // and most of the icon fade, and only the ones the user has not
+        // already re-raised themselves (still iconic).
+        std::thread::sleep(std::time::Duration::from_millis(450));
+        let a4 = a2.clone();
+        let _ = a2.run_on_main_thread(move || {
+            let st = a4.state::<crate::AppShared>();
+            let parked: Vec<isize> = {
+                let mut s = crate::util::lock_shared(&st.0);
+                std::mem::take(&mut s.lock_minimized)
+            };
+            let back = crate::tasks::restore_windows(&parked);
+            log(&format!(
+                "lockscreen: {back}/{} parked window(s) back on screen",
+                parked.len()
+            ));
+        });
     });
-    log("lockscreen: unlocked");
+    log("lockscreen: unlocked (choreography playing)");
     Ok(())
 }
 

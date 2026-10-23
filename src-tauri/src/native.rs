@@ -1459,6 +1459,7 @@ pub fn lock_hotkey_notify(app: &AppHandle) {
 // ---------------------------------------------------------------------------
 
 pub fn native_main(app: AppHandle) {
+    crate::util::register_thread("pump");
     let _ = APP_HANDLE.set(app.clone());
     unsafe {
         let st = app.state::<crate::AppShared>();
@@ -1604,6 +1605,22 @@ pub fn native_main(app: AppHandle) {
         }
 
         crate::hushtop::init(&app, &st);
+
+        // Boot choreography, native half: with the live desktop applied,
+        // every foreign top-level window steps aside so the shell starts
+        // ALONE on its sheet — then the webview lifts the ink veil, sweeps
+        // the ruled-line curtain left -> right and fades the icons/widgets
+        // in. Nothing is recorded: boot cleanup is not a lock, these stay
+        // minimized (a later lock records ITS OWN sweep for the unlock).
+        {
+            let swept = crate::tasks::minimize_all_except_shell();
+            let mut s = util::lock_shared(&st.0);
+            s.lock_minimized.clear();
+            util::log(&format!(
+                "native: boot sweep minimized {} window(s) — the desktop starts alone",
+                swept.len()
+            ));
+        }
 
         if st.0.lock().unwrap_or_else(|e| e.into_inner()).hwnd_preview != 0 {
             let hp = hwnd(st.0.lock().unwrap_or_else(|e| e.into_inner()).hwnd_preview);
