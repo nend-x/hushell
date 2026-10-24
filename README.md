@@ -23,7 +23,8 @@
   </span>
 </p>
 
-<img width="1920" height="1080" alt="{E334ACD0-3150-4A6B-9565-749EA132E9D5}" src="https://github.com/user-attachments/assets/f42e1adf-23d3-4dd9-a52a-c6ef0431c5d0" />
+<img width="1920" height="1080" alt="{DA777593-31C2-4DB4-902C-ADDF473E87BC}" src="https://github.com/user-attachments/assets/93f1a3e7-9c8c-4a6f-8c4c-eb20af9095ba" />
+
 
 
 
