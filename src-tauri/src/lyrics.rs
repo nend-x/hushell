@@ -6,7 +6,11 @@
 //! bodies, headers and response paths here are the verified ones:
 //!
 //! * LRCLIB      GET  https://lrclib.net/api/get?...&duration=  (+ /api/search
-//!               fallback) — JSON {syncedLyrics, plainLyrics}; needs a UA.
+//!               fallback) — JSON {syncedLyrics, plainLyrics}; needs a UA —
+//!               throttled clients (503/429) are retried twice with backoff;
+//!               every request carries the Lrclib-Client header (a throttled
+//!               window served a header-carrying request while the bare one
+//!               503'd).
 //! * QQ Music    POST https://u.y.qq.com/cgi-bin/musicu.fcg (JSON body,
 //!               module music.search.SearchCgiService) -> song mid; then
 //!               GET c.y.qq.com/lyric/fcgi-bin/fcg_query_lyric_new.fcg ->
@@ -244,6 +248,36 @@ fn agent() -> ureq::Agent {
         .build()
 }
 
+/// The etiquette header LRCLIB's API asks clients to send. Probed live:
+/// during a throttle window a request WITH it got served while the same
+/// URL without it got 503 — the shell always carries it now.
+const LRCLIB_CLIENT: &str = "hushell 1.0.0 (desktop shell lyrics widget)";
+
+/// One LRCLIB GET with throttle survival: LRCLIB answers bursts of
+/// searches with 503/429, and it is frequently a song's ONLY carrier (a
+/// stylized underground track the CN catalogs do not list at all) — one
+/// throttle then means NO lyrics at all. Every request carries the
+/// Lrclib-Client header; on a throttle the read backs off twice (1.2 s,
+/// 2.5 s) before giving up. The retries live on the source's own thread —
+/// the other four sources never wait for them. 404 (no record) and
+/// transport errors are NOT retried: nothing arrived and nothing will.
+fn lrclib_get(http: &ureq::Agent, url: &str) -> Option<serde_json::Value> {
+    for (attempt, wait) in [(0u32, 0u64), (1, 1200), (2, 2500)] {
+        if attempt > 0 {
+            std::thread::sleep(Duration::from_millis(wait));
+        }
+        match http.get(url).set("Lrclib-Client", LRCLIB_CLIENT).call() {
+            Ok(resp) => return resp.into_json::<serde_json::Value>().ok(),
+            Err(ureq::Error::Status(code, _)) if code == 503 || code == 429 => {
+                log(&format!("lyrics: lrclib throttled ({code}) — retry {attempt}/2"));
+                continue;
+            }
+            Err(_) => return None,
+        }
+    }
+    None
+}
+
 /// Percent-encode one query/path component (unreserved chars pass through).
 fn qenc(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -429,26 +463,24 @@ fn src_lrclib(http: &ureq::Agent, artist: &str, title: &str, album: &str, dur: f
             qenc(album.trim()),
             dur
         );
-        if let Ok(resp) = http.get(&url).call() {
-            if let Ok(v) = resp.into_json::<serde_json::Value>() {
-                // /api/get is keyed on the exact name — the record's own
-                // trackName rides along as the hit's title voice anyway.
-                let tn = v
-                    .get("trackName")
-                    .and_then(|x| x.as_str())
-                    .map(|s| s.to_string());
-                if let Some(hit) = lrclib_hit(v, dur) {
-                    return Some(SourceHit {
-                        source: "lrclib",
-                        synced: hit.0,
-                        lrc: hit.1,
-                        plain: hit.2,
-                        words: None,
-                        dur: hit.3,
-                        base: 12.0,
-                        title: tn.or_else(|| Some(title.trim().to_string())),
-                    });
-                }
+        if let Some(v) = lrclib_get(http, &url) {
+            // /api/get is keyed on the exact name — the record's own
+            // trackName rides along as the hit's title voice anyway.
+            let tn = v
+                .get("trackName")
+                .and_then(|x| x.as_str())
+                .map(|s| s.to_string());
+            if let Some(hit) = lrclib_hit(v, dur) {
+                return Some(SourceHit {
+                    source: "lrclib",
+                    synced: hit.0,
+                    lrc: hit.1,
+                    plain: hit.2,
+                    words: None,
+                    dur: hit.3,
+                    base: 12.0,
+                    title: tn.or_else(|| Some(title.trim().to_string())),
+                });
             }
         }
     }
@@ -457,8 +489,7 @@ fn src_lrclib(http: &ureq::Agent, artist: &str, title: &str, album: &str, dur: f
         qenc(title.trim()),
         qenc(artist.trim())
     );
-    let resp = http.get(&url).call().ok()?;
-    let v = resp.into_json::<serde_json::Value>().ok()?;
+    let v = lrclib_get(http, &url)?;
     let arr = v.as_array()?;
     // Best entry: synced beats plain, THE SONG'S OWN TIME breaks ties, and
     // the title identity outranks both — a same-titler at a loose duration
