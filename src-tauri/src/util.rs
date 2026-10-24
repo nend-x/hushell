@@ -70,6 +70,31 @@ static LOCK_OWNER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::
 static LOCK_SINCE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static T0: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
 
+thread_local! {
+    /// True on the native thread while a heartbeat beat is running. A beat
+    /// holds the state mutex through the raw `st.0.lock()` in host_proc — so
+    /// ANY attempt to take that mutex again on the same thread (a re-entrant
+    /// message dispatch inside a cross-thread call the beat made) spins on a
+    /// non-reentrant mutex against its own guard: the beat never returns, the
+    /// mutex is held forever, and every thread in the process piles up behind
+    /// it. That was the RDR1 launch/quit bar death (and the Lossless Scaling
+    /// one before it): a sent WM_DISPLAYCHANGE broadcast from the game's mode
+    /// switch landed mid-beat, ran display_change, and lock_shared'd into the
+    /// beat's own guard. Both re-entry gates check this flag.
+    static IN_BEAT: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Whether the calling thread is inside a heartbeat beat (state mutex held
+/// by the beat's own guard — re-entrant acquisition is forbidden).
+pub fn in_beat() -> bool {
+    IN_BEAT.with(|c| c.get())
+}
+
+/// Mark the calling thread as inside / out of a heartbeat beat.
+pub fn set_in_beat(v: bool) {
+    IN_BEAT.with(|c| c.set(v));
+}
+
 fn ms_since_t0() -> u64 {
     let t0 = T0.get_or_init(std::time::Instant::now);
     t0.elapsed().as_millis() as u64
@@ -93,7 +118,15 @@ pub fn lock_shared(m: &std::sync::Mutex<Shared>) -> std::sync::MutexGuard<'_, Sh
                 return g;
             }
             Err(std::sync::TryLockError::WouldBlock) => {
-                unsafe { pump_sent_messages() };
+                // Un-wedge senders: while we wait, process messages SENT to
+                // this thread's windows, so a thread blocked in SendMessage
+                // to us (and holding nothing we need) makes progress. NOT
+                // during a beat, though: a dispatched handler may want the
+                // state mutex the beat already holds — re-entrant acquisition
+                // on the same thread can never succeed (the RDR1 freeze).
+                if !in_beat() {
+                    unsafe { pump_sent_messages() };
+                }
                 std::thread::sleep(std::time::Duration::from_millis(1));
                 let now = std::time::Instant::now();
                 if now.duration_since(last_log) >= std::time::Duration::from_secs(5) {

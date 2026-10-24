@@ -1541,18 +1541,50 @@ fn build_cycle() -> Cycle {
     c
 }
 
+/// Messages whose host_proc arms take the state lock. A re-entrant delivery
+/// of any of these DURING a beat must be deferred (see host_proc).
+fn host_lock_msg(msg: u32) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::WM_DISPLAYCHANGE;
+    msg == WM_DISPLAYCHANGE || msg == crate::clipboard::WM_CLIPBOARDUPDATE
+}
+
+static DEFER_LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 unsafe extern "system" fn host_proc(
-    _hwnd: HWND,
+    hwnd: HWND,
     msg: u32,
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // --- re-entrancy guard -------------------------------------------------
+    // Sent messages are dispatched re-entrantly: while the pump thread sits
+    // inside a beat (state mutex held by the beat's raw guard in the WM_TIMER
+    // arm below) and blocks in a cross-thread window call the beat made
+    // (SHAppBarMessage, SetWindowPos, ShowWindow on a main-owned bar), a
+    // WM_DISPLAYCHANGE broadcast from a game's mode switch (RDR1, Lossless
+    // Scaling — any resolution change) lands RIGHT THERE. Running its
+    // handler inline means display_change -> lock_shared on the SAME thread:
+    // a non-reentrant mutex against its own guard. The beat never returns,
+    // the mutex is held forever, every thread piles up behind it, and the
+    // bar is gone for good. Re-post to our own queue instead: the copy is
+    // dispatched after the beat returns and the guard drops.
+    if util::in_beat() && host_lock_msg(msg) {
+        let _ = PostMessageW(hwnd, msg, wparam, lparam);
+        if !DEFER_LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            util::log(
+                "host: lock message re-entered during a beat — deferred (re-entrancy guard)",
+            );
+        }
+        return LRESULT(0);
+    }
     match msg {
         windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == TIMER_TICK => {
             if let Some(app) = APP_HANDLE.get() {
                 let st = app.state::<crate::AppShared>();
                 let mut s = st.0.lock().unwrap_or_else(|e| e.into_inner());
+                util::set_in_beat(true);
                 CYCLE.with(|c| c.borrow_mut().run(app, &mut s));
+                util::set_in_beat(false);
             }
             LRESULT(0)
         }
@@ -1621,7 +1653,7 @@ unsafe extern "system" fn host_proc(
             lock_hotkey_apply();
             LRESULT(0)
         }
-        _ => DefWindowProcW(_hwnd, msg, wparam, lparam),
+        _ => DefWindowProcW(hwnd, msg, wparam, lparam),
     }
 }
 
