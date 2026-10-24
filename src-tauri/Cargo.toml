@@ -12,13 +12,17 @@ tauri-build = { version = "2", features = [] }
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# hook-companion integrity: an extracted %TEMP% copy is replaced whenever its
+# SHA-512 differs from the bytes embedded in this build (a size-only guard
+# once let a same-byte-count stale shell.exe survive every re-upload).
+sha2 = "0.10"
 base64 = "0.22"
 png = "0.17"
 systray-util = "0.2"
 tokio = { version = "1", features = ["rt", "sync", "time", "macros"] }
 tracing-subscriber = "0.3"
 # HTTP client
-ureq = "2"
+ureq = { version = "2", features = ["json"] }
 regex = "1"
 # the #[implement] COM macro expands to `windows_core::...` paths and
 # needs the crate under this exact name.
@@ -47,6 +51,7 @@ features = [
     "Win32_Media_Audio",
     "Win32_Security",
     "Win32_Storage_FileSystem",
+    "Win32_Storage_Xps",
     "Win32_System_Com",
     "Win32_System_Com_StructuredStorage",
     "Win32_System_DataExchange",

@@ -3,9 +3,9 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use tauri::{AppHandle, Emitter, Manager};
 use windows::Win32::Foundation::HWND;
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetSystemMetrics, GetForegroundWindow, IsWindow, IsWindowVisible, SetWindowPos, ShowWindow,
-    HWND_TOPMOST, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
-    SW_HIDE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SW_SHOW,
+    GetSystemMetrics, GetForegroundWindow, GetWindowRect, IsWindow, IsWindowVisible,
+    SetWindowPos, HWND_TOPMOST, SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN,
+    SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW,
 };
 
 use crate::util::log;
@@ -128,6 +128,18 @@ pub fn lock(app: &AppHandle) {
         ));
         s.lock_minimized = swept;
     }
+    // The taskbar does not vanish for the lock — it SLIDES off the bottom
+    // edge of its own monitor while the desktop's icon fade plays (the
+    // overlay is transparent at this stage, so the slide is the first thing
+    // the eye catches). The slide owns the bars: the one main_assert pass
+    // below must not park them out from under the animation (later passes
+    // park instantly — a bar reappearing mid-lock never waits for art).
+    // The PARK-HOLD also starts here: it keeps the heartbeat's bar-geometry
+    // beat off the parked bars until the unlock slide takes over (the beat
+    // used to pop them home the moment LOCKED cleared — the blink).
+    crate::native::set_bars_park_held(true);
+    crate::native::arm_initial_bar_slide();
+    crate::native::bars_slide_down(app);
     let a2 = app.clone();
     let _ = app.run_on_main_thread(move || {
         // Full geometry assert (places over the virtual screen, TOPMOST,
@@ -165,10 +177,15 @@ pub fn unlock(app: &AppHandle, password: &str) -> Result<(), String> {
     let _ = app.emit("lockscreen:hide", ());
     let a2 = app.clone();
     let _ = std::thread::spawn(move || {
-        // The choreography on the desktop: the sweep (1500 ms) crosses the
-        // sheet, then the icons/widgets fade in (900 ms). The transparent
-        // overlay goes first — its ink stack has already faded (.out) by
-        // the time the sweep finishes, so nothing is cut short.
+        // The desktop choreography waits for the lock's wind farm to melt
+        // out first (0.6 s fade, engine clear at 700 ms — hushtop.js owns
+        // that clock), THEN sweeps (1500 ms) and fades the icons/widgets in
+        // (900 ms). The transparent overlay goes at 1700 ms — its ink stack
+        // (0.4 s) and turbines are long gone by then, so hiding it mid-sweep
+        // cuts nothing. The bars are deliberately NOT here: a bar rising
+        // while the sweep crosses underneath it reads as a stutter (the eye
+        // catches the bar fighting the line), so the slide waits for the
+        // whole comeback to finish — see the +3150 step below.
         std::thread::sleep(std::time::Duration::from_millis(1700));
         let a3 = a2.clone(); // a2 stays the dispatcher handle — a3 goes inside
         let _ = a2.run_on_main_thread(move || {
@@ -181,46 +198,16 @@ pub fn unlock(app: &AppHandle, password: &str) -> Result<(), String> {
             // webview restarts the moment the desktop is truly visible
             // again, so "unlock leaves the desktop bare" cannot happen.
             let _ = a3.emit("lockscreen:gone", ());
-            // Restore EVERY bar the lock parked — the primary plus every
-            // secondary strip. Raw ShowWindow + TOPMOST re-raise (same
-            // primitive the fullscreen-hide path uses; tao flag rewrites are
-            // avoided on purpose). The bars come back while the icon fade
-            // is still playing — they are shell chrome, not parked windows.
-            let st = a3.state::<crate::AppShared>();
-            let ids: Vec<isize> = {
-                let s = crate::util::lock_shared(&st.0);
-                let mut v = vec![s.hwnd_bar];
-                v.extend(s.sec_bars.iter().map(|b| b.hwnd));
-                v
-            };
-            for id in ids {
-                if id != 0 {
-                    unsafe {
-                        let h = HWND(id as _);
-                        if IsWindow(h).as_bool() {
-                            let _ = ShowWindow(h, SW_SHOW);
-                            let _ = SetWindowPos(
-                                h,
-                                HWND_TOPMOST,
-                                0,
-                                0,
-                                0,
-                                0,
-                                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-                            );
-                        }
-                    }
-                }
-            }
-            if let Some(w) = a3.get_webview_window("taskbar") {
-                let _ = w.show();
-            }
-            log("lockscreen: all bars restored");
+            log("lockscreen: overlay hidden");
         });
-        // The windows the LOCK minimized come back last — after the sweep
-        // and most of the icon fade, and only the ones the user has not
-        // already re-raised themselves (still iconic).
-        std::thread::sleep(std::time::Duration::from_millis(450));
+        // The windows the LOCK minimized come back while the icon fade is
+        // still playing. The desktop sweep starts at +700 (after the wind
+        // fade) and runs 1500 ms, so it ends at +2200 and the icon fade
+        // plays 2200 -> 3100; restoring here (+2850) lands ~72 % into that
+        // fade — the exact relative position the choreography always used —
+        // and only the ones the user has not already re-raised themselves
+        // (still iconic).
+        std::thread::sleep(std::time::Duration::from_millis(1150));
         let a4 = a2.clone();
         let _ = a2.run_on_main_thread(move || {
             let st = a4.state::<crate::AppShared>();
@@ -233,6 +220,19 @@ pub fn unlock(app: &AppHandle, password: &str) -> Result<(), String> {
                 "lockscreen: {back}/{} parked window(s) back on screen",
                 parked.len()
             ));
+        });
+        // The bars come back LAST — after the sweep (ends +2200) AND the
+        // icon fade (ends +3100) have both finished, so the taskbar rises
+        // onto a settled desktop instead of fighting the comeback effects
+        // (a bar appearing mid-sweep read as a glitch, and the old explicit
+        // ShowWindow right here raced the slide thread and could pop the
+        // bar at its docked rect before the animation ever started — the
+        // slide shows its own bars off-screen first, no help needed).
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let a5 = a2.clone();
+        let _ = a2.run_on_main_thread(move || {
+            crate::native::bars_slide_up(&a5);
+            log("lockscreen: comeback done — bars slide home");
         });
     });
     log("lockscreen: unlocked (choreography playing)");
@@ -264,7 +264,6 @@ fn main_assert(app: &AppHandle) {
         let ht = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         let fg = GetForegroundWindow().0 as isize;
         let needs_focus = fg != hl;
-        use windows::Win32::UI::WindowsAndMessaging::SWP_SHOWWINDOW;
         let _ = SetWindowPos(
             h,
             HWND_TOPMOST,
@@ -281,15 +280,24 @@ fn main_assert(app: &AppHandle) {
         }
         let hb = crate::util::lock_shared(&st.0).hwnd_bar;
         if hb != 0 {
-            let hb = HWND(hb as _);
-            if IsWindow(hb).as_bool() && IsWindowVisible(hb).as_bool() {
-                let _ = ShowWindow(hb, SW_HIDE);
-                log("lockscreen: hushbar parked for the lock");
+            // PARK POLICY — the bars are never hidden for the lock, they are
+            // PARKED just below the virtual screen (still shown — hiding an
+            // acrylic bar makes the unlock slide blink when the material
+            // re-attaches). So this pass only re-parks a bar that is back
+            // ON SCREEN (surfaced mid-lock by some re-assert or display
+            // change): it moves below the virtual screen again. A bar
+            // already parked below the virtual screen intersects nothing
+            // and is left alone.
+            if crate::native::consume_initial_bar_slide() {
+                log("lockscreen: bar park skipped — slide owns the bars");
+            } else {
+                let hb = HWND(hb as _);
+                if IsWindow(hb).as_bool() {
+                    crate::native::park_bar_if_on_screen(hb);
+                }
             }
         }
-        // Secondary bars too: they are TOPMOST on their own monitors, and
-        // the beat was re-raising them above the overlay — a live taskbar
-        // on a locked desktop is an unlocked desktop with extra steps.
+        // Secondary bars too: same never-hide park policy.
         let sec: Vec<isize> = {
             let s = crate::util::lock_shared(&st.0);
             s.sec_bars.iter().map(|b| b.hwnd).collect()
@@ -300,18 +308,25 @@ fn main_assert(app: &AppHandle) {
                 continue;
             }
             let h = HWND(id as _);
-            if IsWindow(h).as_bool() && IsWindowVisible(h).as_bool() {
-                let _ = ShowWindow(h, SW_HIDE);
+            if IsWindow(h).as_bool() && crate::native::park_bar_if_on_screen(h) {
                 parked += 1;
             }
         }
         if parked > 0 {
             log(&format!(
-                "lockscreen: {} secondary bar(s) parked for the lock",
+                "lockscreen: {} bar(s) re-parked below the virtual screen",
                 parked
             ));
         }
     }
+}
+
+/// One full geometry assert, queued to the main thread — for display
+/// changes and anything else that must re-span the overlay NOW, not on the
+/// next beat. While locked a fresh monitor must never show the desktop.
+pub fn assert_full(app: &AppHandle) {
+    let a2 = app.clone();
+    let _ = app.run_on_main_thread(move || main_assert(&a2));
 }
 
 pub unsafe fn beat(app: &AppHandle, s: &mut crate::shared::Shared, beats: u64) {
@@ -337,8 +352,49 @@ pub unsafe fn beat(app: &AppHandle, s: &mut crate::shared::Shared, beats: u64) {
             & windows::Win32::UI::WindowsAndMessaging::WS_EX_TOPMOST.0 as isize)
             != 0;
     let foreign_above = fg != hl && fg != 0 && fg_topmost;
+    // A display joined or left: the overlay must span the NEW virtual
+    // screen, and it must do it NOW — between the periodic asserts a fresh
+    // monitor would show the bare desktop (icons, widgets — a peek).
+    let (vx, vy, vw, vh) = (
+        GetSystemMetrics(SM_XVIRTUALSCREEN),
+        GetSystemMetrics(SM_YVIRTUALSCREEN),
+        GetSystemMetrics(SM_CXVIRTUALSCREEN),
+        GetSystemMetrics(SM_CYVIRTUALSCREEN),
+    );
+    let mut rc = windows::Win32::Foundation::RECT::default();
+    let fits = GetWindowRect(h, &mut rc).is_ok()
+        && rc.left <= vx
+        && rc.top <= vy
+        && rc.right >= vx + vw
+        && rc.bottom >= vy + vh;
     let periodic = beats % FULL_ASSERT_EVERY == 0;
-    if !(periodic || !visible || foreign_above) {
+    // Re-park EVERY beat — this IS the global 100 ms heartbeat (cycle.rs,
+    // registered as "lock"), no private timer of our own: anything that
+    // surfaced since the lock (spawned app windows, self-restoring windows,
+    // a display hotplug re-flow) steps aside within one beat, not a second
+    // later. The sweep only minimizes VISIBLE foreign windows — the ones
+    // already parked are skipped, so the steady-state cost is one
+    // enumerate_light pass (the beat already carries one) — and the result
+    // is appended (deduped) to the parked list so a verified unlock brings
+    // every one of them back.
+    {
+        let swept = crate::tasks::minimize_all_except_shell();
+        if !swept.is_empty() {
+            let mut added = 0usize;
+            for hw in swept {
+                if !s.lock_minimized.contains(&hw) {
+                    s.lock_minimized.push(hw);
+                    added += 1;
+                }
+            }
+            if added > 0 {
+                log(&format!(
+                    "lockscreen: beat re-parked {added} surfaced window(s)"
+                ));
+            }
+        }
+    }
+    if !(periodic || !visible || foreign_above || !fits) {
         return;
     }
     // One assertion in flight at a time; the next beat re-checks anyway.
@@ -349,6 +405,8 @@ pub unsafe fn beat(app: &AppHandle, s: &mut crate::shared::Shared, beats: u64) {
         "overlay hidden"
     } else if foreign_above {
         "foreign topmost foreground"
+    } else if !fits {
+        "virtual screen changed"
     } else {
         "periodic"
     };

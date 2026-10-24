@@ -1793,7 +1793,8 @@ pub fn widget_add(
         "clipboard" => (252, 252),
         "stats" => (216, 144),
         "lock" => (72, 72),
-        "media" => (288, 162),
+        "media" => (252, 252),
+        "lyrics" => (252, 288),
         "spaces" => (216, 72),
         "brightness" => (252, 108),
         "effects" => (216, 72),
@@ -1802,21 +1803,9 @@ pub fn widget_add(
     let st = app.state::<crate::AppShared>();
     let mut s = crate::util::lock_shared(&st.0);
     let space = space.min(1);
-    if kind == "spaces" {
-        // THE second-desktop switcher is GLOBAL — it rides both desktops (it
-        // is the control that gets you back), so one instance exists in the
-        // whole shell, not one per space.
-        for (i, sp) in s.cfg.spaces.iter().enumerate() {
-            if let Some(wd) = sp.widgets.iter().find(|wd| wd.kind == kind) {
-                let id = wd.id;
-                log(&format!(
-                    "hushtop: {kind} widget add refused — the global switcher already lives on desktop {} (single instance, both desktops)",
-                    i + 1
-                ));
-                return Ok(id);
-            }
-        }
-    } else if kind == "media" || kind == "brightness" || kind == "effects" {
+    if kind == "media" || kind == "brightness" || kind == "effects" || kind == "lyrics"
+        || kind == "spaces"
+    {
         if let Some(wd) = s.cfg.spaces[space]
             .widgets
             .iter()
@@ -1846,11 +1835,6 @@ pub fn widget_add(
         space + 1
     ));
     emit_cards(app, &s);
-    // The lock is HELD here — the _sync variant is mandatory. The old
-    // set_wants_levels(app) re-locked this same Mutex on this same thread:
-    // every dropped widget froze the main thread (ghost never dismissed)
-    // and the shell died seconds later.
-    crate::media::set_wants_levels_sync(&s);
     Ok(id)
 }
 
@@ -1899,6 +1883,13 @@ pub fn widget_save_pos(
                 wd.h = crate::config::snap_card_h(ch);
             }
         }
+        // Fixed-canvas widgets keep their canonical size no matter what the
+        // caller measured (the page enforces the same rule in renderWidgets)
+        // — the spaces payload feeds the switch-wipe placeholder verbatim,
+        // and an off-canvas card there hung past its grid slot.
+        let (kw, kh) = crate::config::canonical_widget_dims(&wd.kind, wd.w, wd.h);
+        wd.w = kw;
+        wd.h = kh;
     } else {
         return Err(format!("no widget #{id}"));
     }
@@ -1931,8 +1922,6 @@ pub fn widget_del_any(app: &AppHandle, id: u32) -> Result<(), String> {
     s.cfg.save();
     log(&format!("hushtop: HUSH widget #{id} removed"));
     emit_cards(app, &s);
-    // Lock is held — see widget_add for why this must be the _sync variant.
-    crate::media::set_wants_levels_sync(&s);
     Ok(())
 }
 
@@ -2177,7 +2166,8 @@ fn ghost_size(kind: &str) -> (i32, i32) {
         "clipboard" => (252, 252),
         "stats" => (216, 144),
         "lock" => (72, 72),
-        "media" => (288, 162),
+        "media" => (252, 252),
+        "lyrics" => (252, 288),
         "spaces" => (216, 72),
         "brightness" => (252, 108),
         "effects" => (216, 72),

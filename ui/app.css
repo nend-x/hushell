@@ -624,6 +624,176 @@ button {
 .vol-btn:hover { background: var(--ink); color: var(--bg-card); }
 .vol-btn.is-muted { background: var(--ink); color: var(--bg-card); }
 
+/* ============================================================
+   STAGE MANAGER (stage.html) — the alt+tab replacement. One
+   screenwide overlay: a dark scrim, a centered grid of window
+   cards (live thumbnails captured at open), a CUSTOM SCROLLBAR
+   on the wrap. Esc closes; picking a card plays the fake-window
+   maximize and swaps in the real window natively.
+   ============================================================ */
+
+[data-page="stage"] { display: block; }
+
+.st-scrim {
+  position: absolute;
+  inset: 0;
+  background: rgba(10, 10, 13, 0.55);
+  backdrop-filter: blur(16px) saturate(0.9);
+  -webkit-backdrop-filter: blur(16px) saturate(0.9);
+  opacity: 0;
+  transition: opacity 300ms var(--ease);
+}
+.st-scrim.on { opacity: 1; }
+.st-scrim.out { opacity: 0; }
+
+.st-wrap {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 7vh 6vw 9vh;
+  /* the CUSTOM scrollbar: a quiet ink pill on a bare track */
+  scrollbar-width: thin;
+  scrollbar-color: var(--ink-2) transparent;
+}
+.st-wrap::-webkit-scrollbar { width: 10px; }
+.st-wrap::-webkit-scrollbar-track { background: transparent; }
+.st-wrap::-webkit-scrollbar-thumb {
+  background: rgba(236, 234, 222, 0.28);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+  border-radius: 8px;
+}
+.st-wrap::-webkit-scrollbar-thumb:hover {
+  background: rgba(236, 234, 222, 0.55);
+  border: 3px solid transparent;
+  background-clip: padding-box;
+}
+
+.st-grid {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-content: flex-start;
+  gap: 22px;
+  max-width: 1160px;
+  transition: opacity 240ms var(--ease);
+}
+.st-grid.out { opacity: 0; }
+
+.st-card {
+  width: 302px;
+  height: 196px;
+  background: var(--bg-card);
+  border: 1px solid var(--stroke);
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  cursor: pointer;
+  animation: st-pop 300ms var(--ease) backwards;
+  transition: border-color var(--fast) ease, transform var(--fast) ease,
+    box-shadow var(--fast) ease;
+}
+.st-card:hover {
+  border-color: var(--ink-2);
+  transform: translateY(-3px);
+  box-shadow: var(--shadow-card);
+}
+.st-card:active { transform: translateY(-1px); }
+.st-card.is-min .st-flag { display: block; }
+
+@keyframes st-pop {
+  0% { transform: translateY(14px) scale(0.94); opacity: 0; }
+  100% { transform: translateY(0) scale(1); opacity: 1; }
+}
+
+.st-head {
+  flex: 0 0 auto;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--stroke-soft);
+}
+.st-icon {
+  width: 15px;
+  height: 15px;
+  object-fit: contain;
+  flex: 0 0 auto;
+  display: block;
+}
+.st-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.st-flag {
+  display: none;
+  flex: 0 0 auto;
+  font-size: 8.5px;
+  letter-spacing: 0.5px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+}
+.st-thumb {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: var(--thumb-slot);
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+.st-thumb img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.st-thumb .ph {
+  width: 34px;
+  height: 34px;
+  background: var(--stroke);
+}
+
+.st-empty {
+  position: absolute;
+  inset: 0;
+  display: none;
+  place-items: center;
+  font-size: 12px;
+  letter-spacing: 0.6px;
+  color: rgba(236, 234, 222, 0.75);
+}
+
+/* the fake window: a card clone stretched over the screen — the pick
+   animation. It starts at the card's rect (JS sets left/top/w/h) and
+   glides to the full viewport; when it lands, the backend swaps in the
+   real window and the overlay drops. */
+.st-fake {
+  position: fixed;
+  z-index: 40;
+  background: var(--bg-card);
+  border: 1px solid var(--ink-2);
+  overflow: hidden;
+  box-shadow: var(--shadow-card);
+  transition: left 420ms var(--ease), top 420ms var(--ease),
+    width 420ms var(--ease), height 420ms var(--ease);
+}
+.st-fake img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
 html.theming,
 html.theming *,
 html.theming *::before,

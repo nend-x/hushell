@@ -691,23 +691,40 @@ html.theming *::after {
 .widget.media { padding: 0; }
 .widget.media { --media-play-bg: #2a2a2e; }
 :root[data-theme="dark"] .widget.media { --media-play-bg: #4a4a52; }
+/* the nude disc's grooves follow the theme: silver on light paper, ink on dark */
+.widget.media { --disc-a: #dbd8cf; --disc-b: #c7c3b8; }
+:root[data-theme="dark"] .widget.media { --disc-a: #2e2e33; --disc-b: #242428; }
 
-.media-top {
-  display: flex;
-  height: 84px;
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--stroke-soft);
+/* THE CD: the artwork IS the disc. The whole disc rotates (one linear
+   turn per ~4.4 s — the outer edge of a real CD at 1x) while the song
+   plays and freezes, dimmed, on pause; the spindle hub and the groove
+   sheen ride the rotation, so the paper hub stays a fixed point of the
+   disc, not of the page. Without art the disc is a grooved nude pressing. */
+.media-cd {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
-.media-cover-wrap {
+.media-disc {
   position: relative;
-  width: 84px;
-  height: 84px;
-  flex: 0 0 auto;
+  width: 148px;
+  height: 148px;
+  border-radius: 50%;
   overflow: hidden;
-  border-right: 1px solid var(--stroke-soft);
   background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--stroke-soft);
+  animation: media-spin 4.4s linear infinite;
+  animation-play-state: paused;
+  opacity: 0.78;
+  transition: opacity 500ms ease;
 }
-.media-cover {
+.widget.media.playing .media-disc {
+  animation-play-state: running;
+  opacity: 1;
+}
+.media-disc-art {
   position: absolute;
   inset: 0;
   width: 100%;
@@ -716,18 +733,88 @@ html.theming *::after {
   display: block;
   /* monochrome press: the artwork prints in ink and the transport stays
      gray — the widget keeps one paper aesthetic, no accent anywhere */
-  filter: grayscale(1) contrast(1.04);
+  filter: grayscale(1) contrast(1.05);
+}
+.media-disc.nude {
+  background: repeating-radial-gradient(
+    circle at 50% 50%,
+    var(--disc-a) 0 2px,
+    var(--disc-b) 2px 5px
+  );
+}
+.media-disc-sheen {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 24deg,
+      transparent 0 28deg,
+      rgba(255, 255, 255, 0.12) 46deg,
+      transparent 78deg,
+      transparent 205deg,
+      rgba(255, 255, 255, 0.07) 228deg,
+      transparent 262deg
+    ),
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      rgba(0, 0, 0, 0.1) 0 1.5px,
+      transparent 1.5px 4px
+    );
+  pointer-events: none;
+}
+.media-disc-hole {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--paper);
+  /* the hub clamp: a paper disc with its own ink ring, floating on the art */
+  box-shadow:
+    0 0 0 1px var(--stroke-soft),
+    0 0 0 4px var(--paper),
+    0 0 0 5px var(--stroke-soft);
+  display: grid;
+  place-items: center;
+}
+.media-disc-hole::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-2);
+}
+@keyframes media-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
-.media-meta {
-  flex: 1 1 auto;
-  min-width: 0;
+/* the transport row — directly under the disc, as ordered */
+.media-ctrl {
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-top: 1px solid var(--stroke-soft);
+}
+.media-info {
+  flex: 0 0 auto;
+  padding: 6px 12px 2px;
   display: flex;
   flex-direction: column;
-  padding: 12px 12px 9px 11px;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
 }
 .media-title {
-  font-size: 13px;
+  align-self: stretch;
+  text-align: center;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 16px;
   color: var(--ink);
@@ -736,36 +823,16 @@ html.theming *::after {
   text-overflow: ellipsis;
 }
 .media-artist {
-  font-size: 11px;
+  align-self: stretch;
+  text-align: center;
+  font-size: 10.5px;
   line-height: 14px;
   color: var(--ink-2);
-  margin-top: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
-.media-status {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 1.4px;
-  color: var(--ink-2);
-}
 
-.media-band {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-}
-.media-transport {
-  flex: 0 0 112px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
-}
 .media-btn {
   width: 30px;
   height: 30px;
@@ -790,28 +857,6 @@ html.theming *::after {
 .media-btn.play:hover {
   background: var(--media-play-bg);
   filter: brightness(1.07);
-}
-.media-viz-sep {
-  width: 1px;
-  align-self: stretch;
-  background: var(--stroke-soft);
-  flex: 0 0 auto;
-}
-.media-viz {
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 8px 10px 0 11px;
-  --viz-c: var(--ink-2);
-}
-.media-viz i {
-  flex: 0 0 5px;
-  width: 5px;
-  height: 3px;
-  background: var(--viz-c);
-  transition: height 80ms linear;
 }
 
 .media-empty {
@@ -841,6 +886,130 @@ html.theming *::after {
   color: var(--ink-2);
 }
 .media-empty-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 1.6px;
+  color: var(--ink-2);
+}
+
+/* ---- lyrics widget --------------------------------------------------------
+   The words of the playing song on the same paper: a quiet ink stack that
+   highlights as the track moves. Synced results autoscroll (the active line
+   lifts to ink); plain results just sit there to be scrolled by hand. */
+
+.widget.lyrics .grip {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 3;
+}
+.widget.lyrics { padding: 0; }
+
+.ly-head {
+  flex: 0 0 auto;
+  padding: 15px 12px 8px;
+  border-bottom: 1px solid var(--stroke-soft);
+  min-width: 0;
+}
+.ly-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ly-head-artist {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink-2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ly-note {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  opacity: 0.72;
+  padding: 7px 12px 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ly-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 2px 12px 12px;
+  scrollbar-width: none;
+  /* the paper swallows the edges: a soft top/bottom fade instead of a bar */
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+}
+.ly-body::-webkit-scrollbar { display: none; }
+
+.ly-line {
+  font-size: 12px;
+  line-height: 19px;
+  color: var(--ink-2);
+  padding: 2px 0;
+  transition: color 0.25s ease, opacity 0.25s ease;
+  overflow-wrap: anywhere;
+}
+.widget.lyrics.synced .ly-line {
+  color: color-mix(in srgb, var(--ink-2) 62%, var(--paper));
+}
+.widget.lyrics.synced .ly-line.on {
+  color: var(--ink);
+  font-weight: 600;
+}
+
+/* Per-word karaoke (NetEase YRC): each word is a span; the singer lights
+   them one by one (.lit lands as the clock crosses the word's stamp). The
+   unlit words read faint inside the active line, lit words are the ink. */
+.ly-line .w {
+  color: color-mix(in srgb, var(--ink-2) 55%, var(--paper));
+  transition: color 0.14s linear;
+}
+.ly-line .w.sp {
+  margin-left: 0.28em;
+}
+.ly-line .w.lit {
+  color: var(--ink);
+}
+
+.ly-empty {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  display: grid;
+  place-items: center;
+  background: var(--paper);
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 1.6px;

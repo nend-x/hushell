@@ -4,7 +4,7 @@
  * read as blank boxes no matter how much ink was poured in, and they could
  * never look like the widget they stood for. This renderer is the full
  * remake: it builds the widget's REAL body — the exact DOM the desktop
- * cards use (vol-readout, st-rows, media-top, fx-row, sp-seg ...) — with
+ * cards use (vol-readout, st-rows, media-cd, fx-row, sp-seg ...) — with
  * static stub data. A preview is the widget, not a drawing of it.
  *
  *   hushWidgetPreview(kind) -> DocumentFragment of the body children
@@ -26,7 +26,8 @@
     clipboard: [252, 252],
     stats: [216, 144],
     lock: [72, 72],
-    media: [288, 162],
+    media: [252, 252],
+    lyrics: [252, 288],
     spaces: [216, 72],
     brightness: [252, 108],
     effects: [216, 72],
@@ -161,29 +162,23 @@
     return f;
   }
 
-  // ---- media (the playing look — stub track, static viz) -----------------
-
-  var MEDIA_VIZ_BARS = 18;
+  // ---- media (the CD look — grooved disc, controls, title/artist) -------
 
   function mediaFrag() {
     var f = frag();
 
-    var top = el("div", "media-top");
-    var coverWrap = el("div", "media-cover-wrap");
-    var cover = el("img", "media-cover");
-    cover.alt = "";
-    coverWrap.appendChild(cover);
-    var meta = el("div", "media-meta");
-    meta.appendChild(el("div", "media-title", "Midnight City"));
-    meta.appendChild(el("div", "media-artist", "M83 \u2014 Hurry Up, We're Dreaming"));
-    var status = el("div", "media-status");
-    status.style.display = "none";
-    meta.appendChild(status);
-    top.appendChild(coverWrap);
-    top.appendChild(meta);
+    var cd = el("div", "media-cd");
+    // the blank pressing: no art img in the preview — the grooved nude
+    // disc is the whole face (a srcless <img> used to sit over it)
+    var disc = el("div", "media-disc nude");
+    var sheen = el("div", "media-disc-sheen");
+    var hole = el("div", "media-disc-hole");
+    disc.appendChild(sheen);
+    disc.appendChild(hole);
+    cd.appendChild(disc);
+    f.appendChild(cd);
 
-    var band = el("div", "media-band");
-    var transport = el("div", "media-transport");
+    var ctrl = el("div", "media-ctrl");
     var prev = el("button", "media-btn");
     prev.type = "button";
     prev.disabled = true;
@@ -199,26 +194,15 @@
     next.disabled = true;
     next.innerHTML =
       '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><path d="M16 5h2v14h-2zM4 5l11 7L4 19z"/></svg>';
-    transport.appendChild(prev);
-    transport.appendChild(play);
-    transport.appendChild(next);
+    ctrl.appendChild(prev);
+    ctrl.appendChild(play);
+    ctrl.appendChild(next);
+    f.appendChild(ctrl);
 
-    var sep = el("div", "media-viz-sep");
-    var viz = el("div", "media-viz");
-    for (var i = 0; i < MEDIA_VIZ_BARS; i++) {
-      var b = el("i");
-      // a believable static spectrum: low on the edges, tall mid-band
-      var t = Math.abs(i - (MEDIA_VIZ_BARS - 1) / 2) / ((MEDIA_VIZ_BARS - 1) / 2);
-      var h = Math.round(6 + (1 - t) * (30 + (i % 3) * 5));
-      b.style.height = h + "px";
-      viz.appendChild(b);
-    }
-    band.appendChild(transport);
-    band.appendChild(sep);
-    band.appendChild(viz);
-
-    f.appendChild(top);
-    f.appendChild(band);
+    var info = el("div", "media-info");
+    info.appendChild(el("div", "media-title", "Midnight City"));
+    info.appendChild(el("div", "media-artist", "M83 \u2014 Hurry Up, We're Dreaming"));
+    f.appendChild(info);
     return f;
   }
 
@@ -277,6 +261,39 @@
     return f;
   }
 
+  // ---- lyrics (the synced look — stub track, one line lifted to ink) -----
+
+  function lyricsFrag() {
+    var f = frag();
+    var head = el("div", "ly-head");
+    head.appendChild(el("div", "ly-head-title", "Midnight City"));
+    head.appendChild(el("div", "ly-head-artist", "M83 \u2014 Hurry Up, We're Dreaming"));
+    f.appendChild(head);
+    f.appendChild(el("div", "ly-note", "matched on 2 sites \u00b7 synced"));
+    var body = el("div", "ly-body");
+    var list = el("div", "ly-list");
+    var lines = [
+      "Midnight, the city holds its breath",
+      "Neon spills across the empty street",
+      "I was walking through the midnight rain",
+      "Streetlights blink along the avenue",
+      "Waiting for a ride in the dark",
+      "The clock strikes midnight once again",
+      "City of light, city of night",
+      "Midnight keeps the whole town still",
+      "Waiting for the morning light",
+      "Around the corner of the street",
+    ];
+    for (var i = 0; i < lines.length; i++) {
+      var d = el("div", "ly-line", lines[i]);
+      if (i === 2) d.classList.add("on");
+      list.appendChild(d);
+    }
+    body.appendChild(list);
+    f.appendChild(body);
+    return f;
+  }
+
   // ---- notes (the paper itself) -------------------------------------------
 
   function notesFrag() {
@@ -299,6 +316,7 @@
     stats: statsFrag,
     lock: lockFrag,
     media: mediaFrag,
+    lyrics: lyricsFrag,
     spaces: spacesFrag,
     effects: effectsFrag,
   };

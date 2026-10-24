@@ -10,12 +10,16 @@
  *
  * set(kind) coerces anything unknown (and the retired "rain") to "none",
  * drives the raf loop, and returns the coerced kind so the caller can sync
- * its own UI. kick() force-restarts the loop. Snow/star draw as the
- * dark-shell ink tone; leaves carry the reference art's own palette (the
- * gray leaf with paper-tone veins); the wind farm carries its tier palette
- * (the sheet fills #1b1b1f and occludes). The WIND FARM is the lock screen's
- * scene — the desktop gates it away (hushtop.js coerces wind to none),
- * the engine itself stays neutral.
+ * its own UI. pause()/resume() FREEZE the running scene without destroying
+ * it — the raf loop stops, the particles keep their positions (and the
+ * canvas keeps its last frame) and resume() continues exactly where the
+ * freeze happened, so a stage hand-off (the lock covering the desktop)
+ * never reads as a respawn. kick() force-restarts the loop. Snow/star draw
+ * as the dark-shell ink tone; leaves carry the reference art's own palette
+ * (the gray leaf with paper-tone veins); the wind farm carries its tier
+ * palette (the sheet fills #1b1b1f and occludes). The WIND FARM is the lock
+ * screen's scene — the desktop gates it away (hushtop.js coerces wind to
+ * none), the engine itself stays neutral.
  */
 window.hushFx = (function () {
   let back = null;
@@ -414,6 +418,34 @@ window.hushFx = (function () {
     raf = requestAnimationFrame(loop);
   }
 
+  function pause() {
+    // Freeze — NOT stop: the loop stops, but kind, parts and the painted
+    // frame all survive. The caller fades the canvas out via CSS while the
+    // scene underneath holds still; resume() continues the SAME particles
+    // from the SAME positions, so the hand-off never reads as a respawn.
+    if (raf) {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    }
+  }
+
+  function resume() {
+    if (kind === "none" || raf) return;
+    const now = performance.now();
+    // Snow/star integrate dt per frame, so the clamp (0.05 s) already
+    // absorbs the whole gap. The leaves are closed-form wall-clock math
+    // (t = now/1000 + off) — without a shift they would JUMP by the freeze
+    // duration. Shifting every off back by the gap pins the effective time
+    // to the frozen value: fall progress AND sway phase continue exactly
+    // where the pause caught them.
+    const gap = prev ? (now - prev) / 1000 : 0;
+    if (gap > 0 && kind === "leaves") {
+      for (const p of parts) p.off -= gap;
+    }
+    prev = now;
+    raf = requestAnimationFrame(loop);
+  }
+
   function mount(o) {
     back = o.back;
     front = o.front;
@@ -426,6 +458,8 @@ window.hushFx = (function () {
   return {
     mount,
     set,
+    pause,
+    resume,
     kick,
     kind: function () {
       return kind;

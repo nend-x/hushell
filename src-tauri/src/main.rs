@@ -10,10 +10,13 @@ mod config;
 mod cycle;
 mod dnd;
 mod frame;
+mod hooks;
 mod icons;
 mod hushtop;
 mod lang;
+mod lockguard;
 mod lockscreen;
+mod lyrics;
 mod media;
 mod native;
 mod shared;
@@ -145,11 +148,14 @@ fn main() {
             wingroup_data,
             media_now,
             media_ctl,
+            lyrics_fetch,
             system_sleep,
             system_restart,
             system_shutdown,
             shell_fresh_start,
-            shell_shutdown
+            shell_shutdown,
+            hook_lock_on,
+            hook_unlock_done
         ])
         // EVERY hushell window is unclosable: the bar used to die to
         // Alt+F4, and a shell that can be dismantled window-by-window is
@@ -515,9 +521,14 @@ fn main() {
             std::thread::spawn(move || native::native_main(handle));
 
             winhook::install(app.handle().clone());
+            lockguard::install();
             startmenu_killer::start();
 
             media::start(app.handle().clone());
+            // The AHK hook companions: reap crashed-session leftovers, extract
+            // the embedded pair to the temp dir, spawn the session hooks. All
+            // off-thread — the shell's first frame never waits on it.
+            hooks::boot();
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1175,23 +1186,23 @@ fn shell_shutdown(app: tauri::AppHandle) {
     native::request_exit(&app);
 }
 
-/// Start fresh — wipe config.json and relaunch from a clean sheet. The
+/// Start fresh — remove EVERY saved byte and relaunch from a clean sheet.
+/// The whole %APPDATA%\hushell data dir goes (config.json — settings,
+/// clipboard history, pinned apps, lock hash — plus the session log); the
+/// extracted hook companions in %TEMP% follow at exit (hooks::wipe_cached).
+/// Arming FRESH_WIPE comes FIRST: from that moment every Config::save() is
+/// a no-op, so no teardown step (restore_native, hushtop::restore, DnD,
+/// clipboard, watchers) can write the settings back behind the wipe — that
+/// re-save was why Start Fresh kept booting with the user's settings. The
 /// relaunch itself is spawned by the native exit handler AFTER the teardown
 /// (taskbar back, icons back), so the two shells never overlap. The fresh
 /// boot then re-drops the startup shortcut (default on) and rebuilds
 /// defaults.
 #[tauri::command]
 fn shell_fresh_start(app: tauri::AppHandle) {
-    if let Some(dir) = config::data_dir() {
-        let p = dir.join("config.json");
-        match std::fs::remove_file(&p) {
-            Ok(()) => util::log("fresh: config.json removed — clean sheet on relaunch"),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                util::log("fresh: no config.json to remove")
-            }
-            Err(e) => util::log(&format!("fresh: config.json remove failed: {e}")),
-        }
-    }
+    config::FRESH_WIPE.store(true, std::sync::atomic::Ordering::Relaxed);
+    util::log("fresh: armed — every save muted, the data dir goes at exit");
+    config::wipe_all();
     {
         let st = app.state::<AppShared>();
         crate::util::lock_shared(&st.0).fresh_relaunch = true;
@@ -1207,6 +1218,41 @@ fn media_now() -> media::MediaNow {
 #[tauri::command]
 fn media_ctl(action: String) -> Result<bool, String> {
     media::media_ctl(&action)
+}
+
+/// The lyrics widget's fetch. Some(dto) = cached / nothing playing — render
+/// now. None = a search is running, the answer lands as `hush:lyrics`.
+#[tauri::command]
+fn lyrics_fetch(
+    app: tauri::AppHandle,
+    title: String,
+    artist: String,
+    album: String,
+    duration: f64,
+) -> Result<Option<lyrics::LyricsDto>, String> {
+    Ok(lyrics::fetch(
+        &app, &title, &artist, &album, duration,
+    ))
+}
+
+/// The lock page reports the LOCKING choreography fully finished (its wind
+/// farm has faded in) — the lock hooks take over and the session hooks die.
+#[tauri::command]
+fn hook_lock_on() {
+    if !lockscreen::is_locked() {
+        return; // stale report — the lock is already gone
+    }
+    hooks::lock_on();
+}
+
+/// hushtop reports the UNLOCKING choreography fully finished (sweep + icon
+/// fade played out) — the lock hooks die and the session hooks return.
+#[tauri::command]
+fn hook_unlock_done() {
+    if lockscreen::is_locked() {
+        return; // a re-lock landed — the lock hooks must stay
+    }
+    hooks::lock_off();
 }
 
 /// Enable SeShutdownPrivilege on the current process token.

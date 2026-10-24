@@ -22,15 +22,19 @@ use windows::Win32::UI::Shell::{
 };
 use windows::Win32::UI::WindowsAndMessaging::{
     BringWindowToTop, CreateWindowExW, DefWindowProcW, DispatchMessageW, EnumWindows,
-    FindWindowExW, GetClassNameW, GetForegroundWindow, GetWindowTextW, GetWindowLongPtrW,
-    GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow, IsWindowVisible, PostMessageW,
-    PostQuitMessage, RegisterClassW, SetForegroundWindow, SetLayeredWindowAttributes, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, SwitchToThisWindow, GWL_EXSTYLE, GWL_STYLE,
-    HMENU, HWND_TOPMOST, LWA_ALPHA, MSG, SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE,
+    FindWindowExW, GetClassNameW, GetForegroundWindow, GetSystemMetrics, GetWindowTextW,
+    GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId, IsIconic, IsWindow,
+    IsWindowVisible, PostMessageW, PostQuitMessage, RegisterClassW, SetForegroundWindow,
+    SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+    SwitchToThisWindow, GWL_EXSTYLE, GWL_STYLE, HMENU, HWND_TOPMOST, LWA_ALPHA, MSG,
+    SM_CXVIRTUALSCREEN, SM_CYVIRTUALSCREEN, SM_XVIRTUALSCREEN, SM_YVIRTUALSCREEN,
+    SWP_FRAMECHANGED, SWP_HIDEWINDOW, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SWP_SHOWWINDOW, SW_HIDE, SW_SHOW, WM_HOTKEY,
     WS_CAPTION, WS_DLGFRAME, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_POPUP,
     WS_SYSMENU, WS_THICKFRAME,
 };
+
+use std::collections::HashMap;
 
 pub(crate) const NC_FRAME_STYLES: isize = WS_THICKFRAME.0 as isize
     | WS_CAPTION.0 as isize
@@ -258,6 +262,401 @@ unsafe fn appbar_unregister(s: &mut Shared) {
         s.appbar_registered = false;
         util::log("appbar: removed");
     }
+}
+
+// ---------------------------------------------------------------------------
+// Bar slide choreography (the lock): the bars no longer pop out of and back
+// into the lock — each one SLIDES off the bottom edge of its own monitor and
+// slides back in when the shell returns. The HWND animates; the page inside
+// just rides along. The AppBar reservation itself never moves (the work-area
+// strip stays registered the whole time), so icons never reflow for a visual
+// effect.
+//
+// PARK POLICY — never hide. Hiding an acrylic bar tears the DWM material
+// down; showing it again re-attaches the backdrop and the first frames
+// flash (the unlock "blink"). So after sliding off its monitor a bar is
+// parked JUST BELOW THE VIRTUAL SCREEN — outside every monitor's area,
+// invisible from anywhere — while it stays SHOWN the whole lock. No hide,
+// no show on the way back, no material churn: the bar simply glides home.
+// The docked rects are stashed here so the unlock slide knows where home
+// is even though GetWindowRect now reads the parked position.
+// ---------------------------------------------------------------------------
+
+/// The docked rect of every bar that slid away, stashed at slide-down time
+/// (the bars sit at their docked rects right before the slide starts).
+static BAR_DOCKED: std::sync::OnceLock<std::sync::Mutex<HashMap<isize, RECT>>> =
+    std::sync::OnceLock::new();
+
+fn bar_docked_slot() -> &'static std::sync::Mutex<HashMap<isize, RECT>> {
+    BAR_DOCKED.get_or_init(|| std::sync::Mutex::new(HashMap::new()))
+}
+
+/// The y where a bar is invisible from EVERY monitor: just below the bottom
+/// edge of the whole virtual screen (the union of all monitors).
+unsafe fn vs_park_y() -> i32 {
+    GetSystemMetrics(SM_YVIRTUALSCREEN)
+        + GetSystemMetrics(SM_CYVIRTUALSCREEN)
+        + 2
+}
+
+/// The lock's mid-lock re-park: when a bar has surfaced back onto a real
+/// monitor (a stray re-assert, a display change re-flow), move it back below
+/// the virtual screen — still SHOWN, per the never-hide park policy. A bar
+/// already parked intersects no monitor and stays untouched. Returns true
+/// when a park actually happened (for the caller's logging).
+pub unsafe fn park_bar_if_on_screen(h: HWND) -> bool {
+    if !IsWindow(h).as_bool() || !IsWindowVisible(h).as_bool() {
+        return false;
+    }
+    let vx = GetSystemMetrics(SM_XVIRTUALSCREEN);
+    let vy = GetSystemMetrics(SM_YVIRTUALSCREEN);
+    let vw = GetSystemMetrics(SM_CXVIRTUALSCREEN);
+    let vh = GetSystemMetrics(SM_CYVIRTUALSCREEN);
+    let mut rc = RECT::default();
+    if GetWindowRect(h, &mut rc).is_err() {
+        return false;
+    }
+    // Intersects the virtual screen? (A parked bar starts below its bottom
+    // edge; a bar fully above/left of it would be a display-gone case —
+    // also left alone.)
+    let on_screen = rc.left < vx + vw
+        && rc.right > vx
+        && rc.top < vy + vh
+        && rc.bottom > vy;
+    if !on_screen {
+        return false;
+    }
+    let _ = SetWindowPos(
+        h,
+        HWND::default(),
+        rc.left,
+        vs_park_y(),
+        rc.right - rc.left,
+        rc.bottom - rc.top,
+        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+    );
+    true
+}
+
+/// One slide at a time: a lock landing mid-unlock-slide must not fight the
+/// unlock slide for the same HWNDs (both threads would write y every 16 ms).
+/// try_lock semantics — a second slide waits its turn (<= ~0.5 s), it never
+/// interleaves.
+static BAR_SLIDE: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+/// TRUE while a bar slide owns the bars. The heartbeat's bar-geometry beat
+/// (reassert_bar + ensure_topmost_bar) reads this and stands down — without
+/// the gate it re-asserted the bars onto their docked rects ~100 ms into
+/// the 460 ms unlock slide, snapping the glide home mid-air and then
+/// fighting the slide thread for the same windows every 100 ms. THE unlock
+/// taskbar blink, alongside the acrylic teardown the no-hide park removes.
+static BAR_SLIDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn bars_sliding() -> bool {
+    BAR_SLIDING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+fn set_bars_sliding(v: bool) {
+    BAR_SLIDING.store(v, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// TRUE from lock() until bars_slide_up() actually begins. The gate
+/// window that used to blink: LOCKED clears at the FIRST breath of the
+/// unlock, but the bars' slide home only starts at +3150 ms of the
+/// comeback — in between, the heartbeat's bar-geometry beat saw
+/// "not locked, not sliding" and REASSERTED the parked bars onto their
+/// docked rects with SWP_SHOWWINDOW, popping the taskbar onto the screen
+/// instantly at ~100 ms ("the taskbar appears when the unlock effect
+/// starts, without animation"), after which the slide had nowhere to
+/// glide (it started at home). While held, the bars stay parked below
+/// the virtual screen through the whole choreography.
+static BAR_PARK_HELD: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn bars_park_held() -> bool {
+    BAR_PARK_HELD.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub fn set_bars_park_held(v: bool) {
+    BAR_PARK_HELD.store(v, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// Set by lock() right before the overlay comes up: the ONE main_assert pass
+/// that runs in the same breath must not park the bars out from under the
+/// slide-down it is supposed to accompany (the beat's later passes park
+/// instantly — a bar reappearing mid-lock never waits for an animation).
+static BAR_SLIDE_ARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn arm_initial_bar_slide() {
+    BAR_SLIDE_ARMED.store(true, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// True when the caller should SKIP parking the bars this pass (the initial
+/// lock pass while the slide-down owns them). Consumes the arm flag.
+pub fn consume_initial_bar_slide() -> bool {
+    BAR_SLIDE_ARMED.swap(false, std::sync::atomic::Ordering::SeqCst)
+}
+
+/// One bar's animation plan: docked geometry (the truth) + the y where the
+/// window sits fully below its monitor's bottom edge.
+struct BarSlide {
+    hwnd: isize,
+    x: i32,
+    y_docked: i32,
+    w: i32,
+    h: i32,
+    y_off: i32,
+}
+
+unsafe fn current_top(b: &BarSlide) -> i32 {
+    let mut rc = RECT::default();
+    if GetWindowRect(hwnd(b.hwnd), &mut rc).is_ok() {
+        rc.top
+    } else {
+        b.y_off
+    }
+}
+
+/// Snapshot the bar windows: docked rect from GetWindowRect (it IS the docked
+/// rect whenever the window is not mid-slide — see the module comment), the
+/// off-screen y from the bar's own monitor (sec bars use the captured `mon`
+/// — MonitorFromWindow lies for a window born on the primary).
+fn collect_bars(app: &AppHandle) -> Vec<BarSlide> {
+    let st = app.state::<crate::AppShared>();
+    let ids: Vec<(isize, Option<(i32, i32, i32, i32)>)> = {
+        let s = crate::util::lock_shared(&st.0);
+        let mut v = vec![(s.hwnd_bar, None)];
+        v.extend(s.sec_bars.iter().map(|b| (b.hwnd, Some(b.mon))));
+        v
+    };
+    let mut out = Vec::new();
+    for (id, mon) in ids {
+        if id == 0 {
+            continue;
+        }
+        let h = hwnd(id);
+        unsafe {
+            if !IsWindow(h).as_bool() {
+                continue;
+            }
+            let mut rc = RECT::default();
+            if GetWindowRect(h, &mut rc).is_err() {
+                continue;
+            }
+            let (_mx, my, _mw, mh) = match mon {
+                Some(m) => m,
+                None => util::monitor_rect(h),
+            };
+            if mh <= 0 {
+                continue;
+            }
+            out.push(BarSlide {
+                hwnd: id,
+                x: rc.left,
+                y_docked: rc.top,
+                w: (rc.right - rc.left).max(1),
+                h: (rc.bottom - rc.top).max(1),
+                y_off: my + mh + 2, // fully below the monitor's bottom edge
+            });
+        }
+    }
+    out
+}
+
+/// easeInOutCubic — the same S-curve the shell's sweep line uses.
+fn ease_slide(t: f64) -> f64 {
+    if t < 0.5 {
+        4.0 * t * t * t
+    } else {
+        1.0 - (-2.0 * t + 2.0f64).powi(3) / 2.0
+    }
+}
+
+const SLIDE_TICK_MS: u64 = 16;
+
+/// RAII for the BAR_SLIDING gate: the slide threads set it true on entry
+/// and this guard clears it on every exit path (early return, panic). The
+/// heartbeat reads it to keep its bar re-assert off the animator's windows.
+struct SlideDone;
+impl Drop for SlideDone {
+    fn drop(&mut self) {
+        set_bars_sliding(false);
+    }
+}
+
+/// Interpolate every bar's top from starts[i] to ends[i] on one shared
+/// S-curve. The curve is sampled from the CAPTURED endpoints only — never
+/// from the live rect — so the easing shape cannot drift mid-flight.
+/// The z-order is NEVER touched here (SWP_NOZORDER): a slide-down must stay
+/// UNDER the lock overlay that is coming up, and a slide-up must not churn
+/// the topmost band sixteen times a second (the bars are born TOPMOST and
+/// keep that band membership without any help).
+unsafe fn animate_bars_ys(bars: &[BarSlide], starts: &[i32], ends: &[i32], dur_ms: u64) {
+    let steps = (dur_ms / SLIDE_TICK_MS).max(1);
+    for i in 1..=steps {
+        let p = ease_slide(i as f64 / steps as f64);
+        for (n, b) in bars.iter().enumerate() {
+            let y0 = starts.get(n).copied().unwrap_or(b.y_docked) as f64;
+            let y1 = ends.get(n).copied().unwrap_or(b.y_docked) as f64;
+            let _ = SetWindowPos(
+                hwnd(b.hwnd),
+                HWND::default(),
+                b.x,
+                (y0 + (y1 - y0) * p) as i32,
+                b.w,
+                b.h,
+                SWP_NOACTIVATE | SWP_SHOWWINDOW | SWP_NOZORDER,
+            );
+        }
+        std::thread::sleep(std::time::Duration::from_millis(SLIDE_TICK_MS));
+    }
+}
+
+/// Lock side: slide every VISIBLE bar below its monitor's bottom edge, then
+/// park it just below the VIRTUAL SCREEN — still SHOWN, never hidden (the
+/// acrylic material survives the whole lock untouched, so the unlock slide
+/// cannot blink). Hidden bars are skipped (already parked — a lock over a
+/// fullscreen-hidden bar is a no-op). Runs on its own thread; takes the
+/// slide turnstile.
+pub fn bars_slide_down(app: &AppHandle) {
+    let a = app.clone();
+    std::thread::Builder::new()
+        .name("bar-slide".into())
+        .spawn(move || {
+            crate::util::register_thread("bar-slide");
+            let _guard = BAR_SLIDE.lock().unwrap_or_else(|e| e.into_inner());
+            set_bars_sliding(true);
+            let _slide_done = SlideDone;
+            let bars: Vec<BarSlide> = {
+                let all = collect_bars(&a);
+                all.into_iter()
+                    .filter(|b| unsafe { IsWindowVisible(hwnd(b.hwnd)).as_bool() })
+                    .collect()
+            };
+            if bars.is_empty() {
+                return;
+            }
+            // Stash the docked rects BEFORE anything moves — this is the
+            // ground truth the unlock slide glides home to (GetWindowRect
+            // will read the parked position for the whole lock).
+            {
+                let mut slot = bar_docked_slot().lock().unwrap_or_else(|e| e.into_inner());
+                slot.clear();
+                unsafe {
+                    for b in &bars {
+                        let mut rc = RECT::default();
+                        if GetWindowRect(hwnd(b.hwnd), &mut rc).is_ok() {
+                            slot.insert(b.hwnd, rc);
+                        }
+                    }
+                }
+            }
+            unsafe {
+                let starts: Vec<i32> = bars.iter().map(|b| current_top(b)).collect();
+                let ends: Vec<i32> = bars.iter().map(|b| b.y_off).collect();
+                animate_bars_ys(&bars, &starts, &ends, 340);
+                // Off every monitor for good: park below the VIRTUAL SCREEN,
+                // still shown — no SW_HIDE, no acrylic teardown, no unlock
+                // blink. x/w/h stay untouched; only y moves.
+                let py = vs_park_y();
+                for b in &bars {
+                    let _ = SetWindowPos(
+                        hwnd(b.hwnd),
+                        HWND::default(),
+                        b.x,
+                        py,
+                        b.w,
+                        b.h,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                }
+            }
+            util::log("lockscreen: bars slid away for the lock (parked below the virtual screen, still shown)");
+        })
+        .ok();
+}
+
+/// Unlock side (+3150 ms, inside the comeback choreography): each bar rises
+/// from its park below the virtual screen to its docked rect — the SAME
+/// surface all the way (it was never hidden), so the acrylic backdrop and
+/// the webview pixels survive intact and there is nothing left to flash.
+/// A bar hidden by something else (fs-watcher) is shown at the park
+/// position first, then joins the same glide.
+pub fn bars_slide_up(app: &AppHandle) {
+    // The park-hold ends HERE — before anything can early-return — so the
+    // heartbeat's bar-geometry beat resumes the moment the slide owns the
+    // bars (BAR_SLIDING covers the animation itself). Cleared even when no
+    // bar exists: a latch left set would pin the beat forever.
+    crate::native::set_bars_park_held(false);
+    let a = app.clone();
+    std::thread::Builder::new()
+        .name("bar-slide".into())
+        .spawn(move || {
+            crate::util::register_thread("bar-slide");
+            let _guard = BAR_SLIDE.lock().unwrap_or_else(|e| e.into_inner());
+            set_bars_sliding(true);
+            let _slide_done = SlideDone;
+            let bars = collect_bars(&a);
+            if bars.is_empty() {
+                return;
+            }
+            unsafe {
+                // A bar hidden by another system (fs-watcher hid it while a
+                // fullscreen app ran) still gets the full choreography: park
+                // position first, show there, then glide home with the rest.
+                let py = vs_park_y();
+                for b in bars.iter() {
+                    if !IsWindowVisible(hwnd(b.hwnd)).as_bool() {
+                        let _ = SetWindowPos(
+                            hwnd(b.hwnd),
+                            HWND::default(),
+                            b.x,
+                            py,
+                            b.w,
+                            b.h,
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        );
+                        let _ = ShowWindow(hwnd(b.hwnd), SW_SHOW);
+                    }
+                }
+                let starts: Vec<i32> = bars.iter().map(|b| current_top(b)).collect();
+                let ends: Vec<i32> = bars
+                    .iter()
+                    .map(|b| {
+                        // The stashed docked rect is the truth for bars that
+                        // slid down (their live rect is the parked one). Bars
+                        // that never slid (fs-hidden at lock time) kept
+                        // their docked rect — the live top IS home.
+                        let slot = bar_docked_slot().lock().unwrap_or_else(|e| e.into_inner());
+                        match slot.get(&b.hwnd) {
+                            Some(rc) => rc.top,
+                            None => b.y_docked,
+                        }
+                    })
+                    .collect();
+                animate_bars_ys(&bars, &starts, &ends, 460);
+                // Land exactly on the docked rect (the stash wins when it
+                // exists — the live rect may still be one tick short).
+                let mut slot = bar_docked_slot().lock().unwrap_or_else(|e| e.into_inner());
+                for b in bars.iter() {
+                    let (dx, dy) = match slot.get(&b.hwnd) {
+                        Some(rc) => (rc.left, rc.top),
+                        None => (b.x, b.y_docked),
+                    };
+                    let _ = SetWindowPos(
+                        hwnd(b.hwnd),
+                        HWND::default(),
+                        dx,
+                        dy,
+                        b.w,
+                        b.h,
+                        SWP_NOZORDER | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    );
+                }
+                slot.clear();
+            }
+            util::log("lockscreen: bars slid back in");
+        })
+        .ok();
 }
 
 // ---------------------------------------------------------------------------
@@ -728,7 +1127,13 @@ unsafe fn beat_hide_native(app: &AppHandle, s: &mut Shared, beats: u64) {
 unsafe fn beat_bar_geometry(_app: &AppHandle, s: &mut Shared, _beats: u64) {
     // Locked: the overlay owns the screen and the bars are parked. Re-assert
     // here would SWP_SHOWWINDOW them right back ABOVE the lockscreen.
-    if crate::lockscreen::is_locked() {
+    // Park-held: the unlock choreography is playing — LOCKED is already
+    // false but the bars must stay parked below the virtual screen until
+    // the slide owns them (the beat used to pop them home at ~100 ms).
+    // Sliding: the slide owns the bars — re-asserting would snap them onto
+    // their docked rects mid-animation and duel the slide thread for the
+    // same HWNDs (the unlock taskbar blink).
+    if crate::lockscreen::is_locked() || bars_park_held() || bars_sliding() {
         return;
     }
     reassert_bar(s);
@@ -990,7 +1395,10 @@ unsafe fn fullscreen_on_monitor(fg: HWND, mon: (i32, i32, i32, i32)) -> bool {
 }
 
 unsafe fn beat_fullscreen(_app: &AppHandle, s: &mut Shared, _beats: u64) {
-    if crate::lockscreen::is_locked() {
+    if crate::lockscreen::is_locked() || bars_sliding() {
+        // Sliding: the fs-watcher hides/shows the bars via raw ShowWindow —
+        // doing that mid-slide means SW_HIDE against an animator that is
+        // writing rects every 16 ms. The watcher catches up next beat.
         return;
     }
     let fg = GetForegroundWindow();
@@ -1050,6 +1458,9 @@ unsafe fn beat_fullscreen(_app: &AppHandle, s: &mut Shared, _beats: u64) {
         if hb_id == 0 {
             continue;
         }
+        // Fullscreen on THAT monitor hides THAT strip (same rule as the
+        // primary's, without the ours-list — the stage overlay exception
+        // that used to live here died with the stage manager).
         let fs = fg_ok && fullscreen_on_monitor(fg, mon);
         let sb = &mut s.sec_bars[i];
         sb.fs_streak = if fs {
@@ -1147,6 +1558,10 @@ unsafe extern "system" fn host_proc(
         }
         WM_APP_EXIT => {
             if let Some(app) = APP_HANDLE.get() {
+                // The AHK companions are ours to the end: the session pair
+                // (and a lock pair from a lock that was up at exit) dies
+                // BEFORE the teardown, so no hook outlives its owner.
+                crate::hooks::shutdown();
                 let st = app.state::<crate::AppShared>();
                 let mut s = st.0.lock().unwrap_or_else(|e| e.into_inner());
                 appbar_unregister(&mut s);
@@ -1156,8 +1571,15 @@ unsafe extern "system" fn host_proc(
                 drop(s);
                 if fresh {
                     // Start Fresh: the teardown is done (taskbar back, icons
-                    // back) — only NOW spawn the clean replacement, so the
-                    // two shells never overlap.
+                    // back). Every saved byte goes NOW — after all teardown
+                    // save paths have run (they were muted by the FRESH_WIPE
+                    // arm; this catches anything written before it) — and
+                    // the extracted hook companions go with them: the fresh
+                    // boot re-extracts from the bytes this build embeds.
+                    crate::config::wipe_all();
+                    crate::hooks::wipe_cached();
+                    // only NOW spawn the clean replacement, so the two
+                    // shells never overlap.
                     fresh_relaunch();
                 }
                 crate::util::log("exit: cleanup done — exiting process");
@@ -1209,6 +1631,13 @@ unsafe extern "system" fn host_proc(
 /// main thread. Never touches Win32 placement under the state lock.
 unsafe fn display_change(app: &AppHandle) {
     let st = app.state::<crate::AppShared>();
+    // LOCKED: the overlay must span the new virtual screen before anything
+    // else re-flows — a fresh monitor must never show the bare desktop for
+    // even one beat. The re-fit below and the bars follow after.
+    if crate::lockscreen::is_locked() {
+        crate::lockscreen::assert_full(app);
+        util::log("display: LOCKED — lock overlay re-asserted over the new virtual screen");
+    }
     let mons = util::monitors();
 
     // --- 1) refresh each bar's monitor rect; collect orphans -------------
@@ -1270,6 +1699,12 @@ unsafe fn display_change(app: &AppHandle) {
             let _ = app.run_on_main_thread(move || unsafe {
                 for mon in missing {
                     let st = a2.state::<crate::AppShared>();
+                    // While LOCKED a new monitor gets its bar built but never
+                    // shown — a live taskbar on a locked display is an
+                    // unlocked desktop with extra steps. The unlock
+                    // choreography re-shows every secondary bar (this one is
+                    // pushed to sec_bars below), so nothing is lost.
+                    let locked = crate::lockscreen::is_locked();
                     let label = {
                         let s = crate::util::lock_shared(&st.0);
                         let mut n = s.sec_bars.len() + 1;
@@ -1335,9 +1770,19 @@ unsafe fn display_change(app: &AppHandle) {
                         wr.t,
                         wr.w(),
                         wr.h(),
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        if locked {
+                            SWP_NOACTIVATE
+                        } else {
+                            SWP_NOACTIVATE | SWP_SHOWWINDOW
+                        },
                     );
-                    let _ = ShowWindow(hwnd(h), SW_SHOW);
+                    if locked {
+                        util::log(&format!(
+                            "display: {label} built HIDDEN — screen is locked (unlock shows it)"
+                        ));
+                    } else {
+                        let _ = ShowWindow(hwnd(h), SW_SHOW);
+                    }
                     s.sec_bars.push(crate::shared::SecBar {
                         hwnd: h,
                         mon,

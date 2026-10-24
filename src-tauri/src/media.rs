@@ -1,9 +1,7 @@
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Emitter};
 use base64::Engine as _;
 use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSession,
@@ -11,17 +9,9 @@ use windows::Media::Control::{
     GlobalSystemMediaTransportControlsSessionPlaybackStatus,
 };
 use windows::Storage::Streams::DataReader;
-use windows::Win32::Media::Audio::{
-    eConsole, eRender, IAudioCaptureClient, IAudioClient, IMMDeviceEnumerator, MMDeviceEnumerator,
-    AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_LOOPBACK,
-};
-use windows::Win32::System::Com::{
-    CoCreateInstance, CoInitializeEx, CLSCTX_ALL, COINIT_MULTITHREADED,
-};
+use windows::Win32::System::Com::{CoInitializeEx, COINIT_MULTITHREADED};
 
 use crate::util::log;
-
-static WANTS_LEVELS: AtomicBool = AtomicBool::new(false);
 
 /// The last media snapshot (also the boot seed for a fresh media widget).
 static LAST: OnceLock<Mutex<Option<MediaNow>>> = OnceLock::new();
@@ -35,6 +25,39 @@ struct WatchState {
     props_sig: String,
     /// signature of the artwork already decoded
     art_sig: String,
+    /// The playback clock projector (see poll_once): the last ACCEPTED raw
+    /// SMTC position, when it was accepted, and what the clock reads now.
+    pos: PosClock,
+    /// The session the clock was built for (a track/session change restarts it).
+    pos_key: String,
+}
+
+/// The local playback clock. SMTC's Position is a LAZY snapshot — plenty of
+/// players refresh it only every few seconds (or on events), and blindly
+/// accepting it every poll made the widget's highlight drag backward (the
+/// "line only switches when the previous one is finished" bug), while the
+/// old LastUpdatedTime projection made it OVERSHOOT on players that leave
+/// that stamp stale (the clock flying through the lyrics). The cure is the
+/// one other lyric apps use: trust raw snapshots only when they move like
+/// playback (progress or a real seek), and advance the clock LOCALLY in
+/// between.
+#[derive(Clone, Copy)]
+struct PosClock {
+    raw: f64,
+    at: std::time::Instant,
+    playing: bool,
+    out: f64,
+}
+
+impl Default for PosClock {
+    fn default() -> Self {
+        PosClock {
+            raw: 0.0,
+            at: std::time::Instant::now(),
+            playing: false,
+            out: 0.0,
+        }
+    }
 }
 
 impl Default for WatchState {
@@ -44,6 +67,8 @@ impl Default for WatchState {
             session_id: String::new(),
             props_sig: String::new(),
             art_sig: String::new(),
+            pos: PosClock::default(),
+            pos_key: String::new(),
         }
     }
 }
@@ -56,13 +81,29 @@ fn watch_slot() -> &'static Mutex<WatchState> {
     WATCH.get_or_init(|| Mutex::new(WatchState::default()))
 }
 
-/// One media snapshot as the media widget consumes it.
+/// One media snapshot as the media widget consumes it. The position block
+/// (duration/position) feeds the lyrics widget's line highlighter — it
+/// interpolates locally between the 1 Hz `hush:media_pos` anchors.
 #[derive(Serialize, Clone, Default)]
 pub struct MediaNow {
     pub title: String,
     pub artist: String,
     pub playing: bool,
     pub cover: Option<String>,
+    #[serde(default)]
+    pub album: String,
+    #[serde(default)]
+    pub duration: f64,
+    #[serde(default)]
+    pub position: f64,
+}
+
+/// The 1 Hz playback anchor for the lyrics widget (no artwork round-trip).
+#[derive(Serialize, Clone, Default)]
+pub struct MediaPos {
+    pub position: f64,
+    pub duration: f64,
+    pub playing: bool,
 }
 
 fn com_mta() {
@@ -77,10 +118,6 @@ fn com_mta() {
 
 pub fn start(app: AppHandle) {
     com_mta();
-    // Seed the demand flag: the visualizer runs from boot only when a media
-    // widget survived the restart in the config.
-    set_wants_levels(&app);
-    let la = app.clone();
     std::thread::Builder::new()
         .name("media-watch".into())
         .spawn(move || {
@@ -88,33 +125,7 @@ pub fn start(app: AppHandle) {
             watch_loop(app);
         })
         .expect("media watch thread");
-    std::thread::Builder::new()
-        .name("media-levels".into())
-        .spawn(move || {
-            crate::util::register_thread("media-levels");
-            levels_loop(la);
-        })
-        .expect("media levels thread");
-    log("media: engines started (smtc watcher + visualizer capture)");
-}
-
-/// Recompute the demand flag from a state reference the caller already
-/// holds. Callers that own the shared lock MUST use this — `set_wants_levels`
-/// would try to re-lock the same non-reentrant Mutex on the calling thread
-/// and deadlock it (the dropped-widget freeze + crash).
-pub fn set_wants_levels_sync(s: &crate::shared::Shared) {
-    let want = s
-        .cfg
-        .spaces
-        .iter()
-        .any(|sp| sp.widgets.iter().any(|w| w.kind == "media"));
-    WANTS_LEVELS.store(want, Ordering::Relaxed);
-}
-
-pub fn set_wants_levels(app: &AppHandle) {
-    let st = app.state::<crate::AppShared>();
-    let s = crate::util::lock_shared(&st.0);
-    set_wants_levels_sync(&s);
+    log("media: engine started (smtc watcher)");
 }
 
 // ---------------------------------------------------------------------------
@@ -135,7 +146,6 @@ fn watch_loop(app: AppHandle) {
                 changed
             };
             if changed {
-                *last_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(now.clone());
                 let _ = app.emit("hush:media", &now);
                 log(&format!(
                     "media: \"{}\" — {}{}",
@@ -144,6 +154,22 @@ fn watch_loop(app: AppHandle) {
                     if now.playing { " (playing)" } else { " (paused)" }
                 ));
             }
+            // The boot-seed snapshot stays LIVE regardless of identity:
+            // media_now() consumers (a fresh CD widget's first paint, the
+            // lyrics fetch's duration) must read the current clock, not the
+            // one frozen at the last track change.
+            *last_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(now.clone());
+            // The lyrics widget's anchor: fresh EVERY poll while a session
+            // exists (1 Hz) — it interpolates between these stamps locally,
+            // so a stable position with no event would stall the highlight.
+            let _ = app.emit(
+                "hush:media_pos",
+                &MediaPos {
+                    position: now.position,
+                    duration: now.duration,
+                    playing: now.playing,
+                },
+            );
         } else {
             let cleared = {
                 let mut g = watch_slot().lock().unwrap_or_else(|e| e.into_inner());
@@ -161,6 +187,14 @@ fn watch_loop(app: AppHandle) {
                 now.playing = false;
                 *last_slot().lock().unwrap_or_else(|e| e.into_inner()) = Some(now.clone());
                 let _ = app.emit("hush:media", &now);
+                let _ = app.emit(
+                    "hush:media_pos",
+                    &MediaPos {
+                        position: now.position,
+                        duration: now.duration,
+                        playing: false,
+                    },
+                );
                 log("media: session gone — nothing playing");
             }
         }
@@ -218,7 +252,7 @@ fn poll_once() -> Option<MediaNow> {
         watch_slot()
             .lock()
             .unwrap_or_else(|e| e.into_inner())
-            .session_id = key;
+            .session_id = key.clone();
 
         let playing = playing_of(&chosen);
         let props = chosen.TryGetMediaPropertiesAsync().ok()?.get().ok()?;
@@ -230,6 +264,73 @@ fn poll_once() -> Option<MediaNow> {
             .Artist()
             .map(|t| t.to_string())
             .unwrap_or_default();
+        let album = props
+            .AlbumTitle()
+            .map(|t| t.to_string())
+            .unwrap_or_default();
+
+        // Playback clock for the lyrics highlighter. Sessions that do not
+        // publish a timeline (some browser streams) leave zeros — the widget
+        // then falls back to unsynced display instead of a frozen line.
+        // DURATION is the timeline's span (End − Start), not the raw End:
+        // players that publish a non-zero StartTime (stream progress baked
+        // into the timeline) made the raw End read long by exactly Start —
+        // and the lyrics sources then matched a 30-minute “song”.
+        let (mut position, mut duration) = (0f64, 0f64);
+        if let Ok(tl) = chosen.GetTimelineProperties() {
+            // WinRT TimeSpan: 100 ns ticks.
+            let raw = tl.Position().map(|t| t.Duration).unwrap_or(0) as f64 / 10_000_000.0;
+            let end = tl.EndTime().map(|t| t.Duration).unwrap_or(0) as f64 / 10_000_000.0;
+            let start = tl.StartTime().map(|t| t.Duration).unwrap_or(0) as f64 / 10_000_000.0;
+            duration = if end > start { end - start } else { end };
+            // THE PLAYBACK CLOCK — raw snapshots + local projection:
+            //   * raw moved like playback (caught up with the projection, or
+            //     ran ahead of it)  -> trust it, re-stamp;
+            //   * raw jumped BACKWARD  -> a real seek, trust it;
+            //   * raw is the same stale snapshot -> keep advancing locally.
+            // The projection is capped at the track's end. No LastUpdatedTime
+            // math: players that refresh that stamp lazily made the old drift
+            // projection overshoot by seconds-to-minutes.
+            let now = std::time::Instant::now();
+            let mut g = watch_slot().lock().unwrap_or_else(|e| e.into_inner());
+            if !playing {
+                g.pos = PosClock {
+                    raw,
+                    at: now,
+                    playing: false,
+                    out: raw,
+                };
+            } else if !g.pos.playing || g.pos_key != key {
+                // resume or track/session change: start from the snapshot
+                g.pos = PosClock {
+                    raw,
+                    at: now,
+                    playing: true,
+                    out: raw,
+                };
+            } else {
+                let expected = g.pos.raw + now.duration_since(g.pos.at).as_secs_f64();
+                if raw >= expected - 0.45 || raw < g.pos.raw - 1.5 {
+                    g.pos = PosClock {
+                        raw,
+                        at: now,
+                        playing: true,
+                        out: raw,
+                    };
+                } else {
+                    let cap = if duration > 0.0 { duration } else { f64::INFINITY };
+                    g.pos.out = expected.min(cap);
+                }
+            }
+            // The clock's READING is g.pos.out in EVERY branch: an accepted
+            // snapshot re-stamps at `raw`, a stale one reads the projection,
+            // a pause holds at its raw. (The first draft assigned `position`
+            // only inside the stale-snapshot arm — an accepted snapshot or a
+            // resume read 0.0, and the widget's 1 Hz anchor treated that as a
+            // seek and snapped the karaoke clock to the top of the song.)
+            position = g.pos.out;
+            g.pos_key = key.clone();
+        }
 
         // Artwork: decode only when the identity changed (the WinRT property
         // fetch is cheap, the decode is not).
@@ -250,7 +351,15 @@ fn poll_once() -> Option<MediaNow> {
             g.as_ref().and_then(|p| p.cover.clone())
         };
 
-        Some(MediaNow { title, artist, playing, cover })
+        Some(MediaNow {
+            title,
+            artist,
+            playing,
+            cover,
+            album,
+            duration,
+            position,
+        })
     }
 }
 
@@ -300,7 +409,10 @@ fn decode_cover(
         Ok(i) => i,
         Err(_) => return None,
     };
-    let small = img.resize_to_fill(128, 128, image::imageops::FilterType::Triangle);
+    // 384 px: the CD widget spins the art at ~148 CSS px — 128 was soft on
+    // a 150 % DPI display and mushy at 200 %. Still one small PNG per track
+    // change, never a stream.
+    let small = img.resize_to_fill(384, 384, image::imageops::FilterType::Triangle);
     let mut png_bytes: Vec<u8> = Vec::new();
     if small
         .write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png)
@@ -387,261 +499,3 @@ pub fn media_ctl(action: &str) -> Result<bool, String> {
         .map_err(|e| format!("{action} failed: {e}"))
 }
 
-const FFT_SIZE: usize = 2048;
-const N_BANDS: usize = 12;
-/// Emit interval: ~45 ms (~22 fps) — fluid enough to feel alive, cheap
-/// enough to never show up in the shell's CPU.
-const LEVEL_TICK_MS: u64 = 45;
-/// Band edges (Hz), log-spaced 55..15000 — the bass band sits where the
-/// kick lives, the top band where the hats live.
-const BAND_EDGES: [f32; N_BANDS + 1] = [
-    55.0, 100.0, 180.0, 320.0, 560.0, 1000.0, 1750.0, 3000.0, 5000.0, 7800.0, 11000.0, 14000.0,
-    15500.0,
-];
-
-const SILENCE_FLOOR: f32 = 0.0025;
-
-fn levels_loop(app: AppHandle) {
-    com_mta();
-    let mut ring: Vec<f32> = Vec::with_capacity(FFT_SIZE);
-    let mut re = vec![0f32; FFT_SIZE];
-    let mut im = vec![0f32; FFT_SIZE];
-    let mut bands = vec![0f32; N_BANDS];
-    let mut client: Option<IAudioClient> = None;
-    let mut capture: Option<IAudioCaptureClient> = None;
-    let mut rate = 48000f32;
-    let mut block_align = 8usize; // stereo f32
-    let mut last_emit = std::time::Instant::now();
-
-    loop {
-        let ambient = WANTS_LEVELS.load(Ordering::Relaxed);
-        if !ambient {
-            // Park: drop the capture device entirely so an idle shell owns
-            // zero audio machinery.
-            if let Some(c) = client.take() {
-                unsafe {
-                    let _ = c.Stop();
-                }
-            }
-            capture = None;
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            continue;
-        }
-
-        // (Re)open the loopback on demand: endpoint changes / first run.
-        if client.is_none() {
-            match open_loopback() {
-                Ok((c, cap, r, ba)) => {
-                    rate = r;
-                    block_align = ba;
-                    client = Some(c);
-                    capture = Some(cap);
-                    log(&format!(
-                        "ambient: loopback open ({rate} Hz, {block_align} B/frame)"
-                    ));
-                }
-                Err(e) => {
-                    log(&format!("ambient: loopback open failed: {e}"));
-                    std::thread::sleep(std::time::Duration::from_millis(1000));
-                    continue;
-                }
-            }
-        }
-
-        let Some(cap) = &capture else { continue };
-        let mut got_any = false;
-        unsafe {
-            // Drain every buffered packet into the ring.
-            loop {
-                let mut frames = match cap.GetNextPacketSize() {
-                    Ok(f) if f > 0 => f,
-                    _ => break,
-                };
-                let mut data: *mut u8 = std::ptr::null_mut();
-                let mut fl = 0u32;
-                let mut _dp = 0u64;
-                let mut _qp = 0u64;
-                if cap
-                    .GetBuffer(&mut data, &mut frames, &mut fl, Some(&mut _dp), Some(&mut _qp))
-                    .is_err()
-                {
-                    break;
-                }
-                let silent = (fl & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32) != 0;
-                let bytes =
-                    std::slice::from_raw_parts(data, (frames as usize) * block_align);
-                downmix_append(&mut ring, bytes, frames as usize, silent);
-                let _ = cap.ReleaseBuffer(frames);
-                got_any = true;
-            }
-        }
-        if !got_any {
-            std::thread::sleep(std::time::Duration::from_millis(LEVEL_TICK_MS / 2));
-        }
-
-        if last_emit.elapsed() >= std::time::Duration::from_millis(LEVEL_TICK_MS) {
-            last_emit = std::time::Instant::now();
-            let tail = if ring.len() > 512 { 512 } else { ring.len() };
-            let sum_sq: f32 = ring[ring.len() - tail..]
-                .iter()
-                .map(|v| v * v)
-                .sum();
-            let rms = if tail > 0 { (sum_sq / tail as f32).sqrt() } else { 0.0 };
-            if rms < SILENCE_FLOOR {
-                for b in bands.iter_mut() {
-                    *b *= 0.6;
-                }
-            } else {
-                compute_bands(&ring, &mut re, &mut im, rate, &mut bands);
-            }
-            let payload: Vec<f32> =
-                bands.iter().map(|v| (v * 100.0).round() / 100.0).collect();
-            let _ = app.emit_to("hushtop", "hush:levels", &payload);
-        }
-    }
-}
-
-/// Open the default render endpoint in loopback. Returns (client, capture,
-/// sample rate, block align bytes per frame).
-fn open_loopback() -> windows::core::Result<(IAudioClient, IAudioCaptureClient, f32, usize)> {
-    unsafe {
-        let enumr: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-        let dev = enumr.GetDefaultAudioEndpoint(eRender, eConsole)?;
-        let client: IAudioClient = dev.Activate::<IAudioClient>(CLSCTX_ALL, None)?;
-        let fmt = client.GetMixFormat()?;
-        let tag = (*fmt).wFormatTag;
-        let rate = (*fmt).nSamplesPerSec as f32;
-        let ba = (*fmt).nBlockAlign as usize;
-        let float_ok = tag == 3 || tag == 0xFFFE; // WAVE_FORMAT_IEEE_FLOAT | EXTENSIBLE
-        if !float_ok || ba == 0 {
-            return Err(windows::core::Error::from_hresult(windows::core::HRESULT(-1)));
-        }
-        client.Initialize(
-            AUDCLNT_SHAREMODE_SHARED,
-            AUDCLNT_STREAMFLAGS_LOOPBACK,
-            2_000_000, // hundreds of ns -> 200 ms buffer
-            0,
-            fmt,
-            None,
-        )?;
-        let capture: IAudioCaptureClient = client.GetService()?;
-        client.Start()?;
-        Ok((client, capture, rate, ba))
-    }
-}
-
-unsafe fn downmix_append(ring: &mut Vec<f32>, bytes: &[u8], frames: usize, silent: bool) {
-    if silent {
-        for _ in 0..frames {
-            push_mono(ring, 0.0);
-        }
-        return;
-    }
-    // Mix format: float32, channels from the format; assume stereo (the
-    // mix is at least stereo on every real endpoint).
-    let floats: &[f32] = std::slice::from_raw_parts(bytes.as_ptr() as *const f32, bytes.len() / 4);
-    let ch = if frames == 0 {
-        2
-    } else {
-        (floats.len() / frames).max(1)
-    };
-    for f in floats.chunks(ch) {
-        let mut acc = 0f32;
-        for v in f {
-            acc += *v;
-        }
-        push_mono(ring, acc / f.len() as f32);
-    }
-}
-
-fn push_mono(ring: &mut Vec<f32>, v: f32) {
-    if ring.len() >= FFT_SIZE {
-        let drop = ring.len() + 1 - FFT_SIZE;
-        ring.drain(..drop.min(ring.len()));
-    }
-    ring.push(v);
-}
-
-/// Window + FFT + band fold. Output 0..1 per band, with a fast-attack /
-/// slow-release envelope so the bars dance on transients and land softly.
-fn compute_bands(
-    ring: &Vec<f32>,
-    re: &mut [f32],
-    im: &mut [f32],
-    rate: f32,
-    bands: &mut [f32],
-) {
-    let n = FFT_SIZE;
-    if ring.len() < n {
-        return;
-    }
-    let start = ring.len() - n;
-    for i in 0..n {
-        let w = 0.5 - 0.5 * (2.0 * std::f32::consts::PI * i as f32 / n as f32).cos();
-        re[i] = ring[start + i] * w;
-        im[i] = 0.0;
-    }
-    fft_inplace(re, im);
-
-    let bin_hz = rate / n as f32;
-    for (bi, band) in bands.iter_mut().enumerate() {
-        let lo = (BAND_EDGES[bi] / bin_hz).max(1.0) as usize;
-        let hi = ((BAND_EDGES[bi + 1] / bin_hz) as usize).clamp(lo + 1, n / 2);
-        let mut peak = 0f32;
-        for b in lo..hi {
-            let m = (re[b] * re[b] + im[b] * im[b]).sqrt();
-            if m > peak {
-                peak = m;
-            }
-        }
-        // Amplitude -> 0..1: normalize by n/8 (a full-scale sine peaks at 1),
-        // then a dB-shaped curve so quiet details stay quiet.
-        let a = (peak / (n as f32 / 8.0)).clamp(0.0, 1.0);
-        let v = a.powf(0.55);
-        // fast attack, slow release
-        *band = if v > *band { v } else { *band * 0.82 + v * 0.18 };
-    }
-}
-
-/// Iterative radix-2 FFT (no external deps; n is a power of two).
-fn fft_inplace(re: &mut [f32], im: &mut [f32]) {
-    let n = re.len();
-    // bit-reversal permutation
-    let mut j = 0usize;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j |= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let ang = -2.0 * std::f32::consts::PI / len as f32;
-        let (wr, wi) = (ang.cos(), ang.sin());
-        let mut i = 0;
-        while i < n {
-            let (mut cwr, mut cwi) = (1.0f32, 0.0f32);
-            for k in 0..len / 2 {
-                let ur = re[i + k];
-                let ui = im[i + k];
-                let vr = re[i + k + len / 2] * cwr - im[i + k + len / 2] * cwi;
-                let vi = re[i + k + len / 2] * cwi + im[i + k + len / 2] * cwr;
-                re[i + k] = ur + vr;
-                im[i + k] = ui + vi;
-                re[i + k + len / 2] = ur - vr;
-                im[i + k + len / 2] = ui - vi;
-                let nwr = cwr * wr - cwi * wi;
-                cwi = cwr * wi + cwi * wr;
-                cwr = nwr;
-            }
-            i += len;
-        }
-        len <<= 1;
-    }
-}

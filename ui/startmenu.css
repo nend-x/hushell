@@ -685,7 +685,6 @@ html, body {
   left: 0;
   --track: var(--stroke-soft);
   --stroke-dash: var(--stroke-soft);
-  --media-play-bg: #4a4a52;
   display: flex;
   flex-direction: column;
   box-sizing: border-box;
@@ -698,8 +697,20 @@ html, body {
 .wprev * {
   pointer-events: none;
 }
+/* the media preview carries the widget's OWN theme vars (hushtop.css scopes
+   them to .widget.media): light gets the dark play chip + silver grooves,
+   dark the lifted chip + graphite grooves — the mini card used to hardcode
+   the dark chip for both themes */
 .wprev.media {
   padding: 0;
+  --media-play-bg: #2a2a2e;
+  --disc-a: #dbd8cf;
+  --disc-b: #c7c3b8;
+}
+:root[data-theme="dark"] .wprev.media {
+  --media-play-bg: #4a4a52;
+  --disc-a: #2e2e33;
+  --disc-b: #242428;
 }
 .wprev.lock {
   padding: 0;
@@ -912,39 +923,102 @@ html, body {
   background: var(--paper);
 }
 
-.wprev .media-top {
-  display: flex;
-  height: 84px;
-  flex: 0 0 auto;
-  border-bottom: 1px solid var(--stroke-soft);
+/* the media preview: the FULL .media-* set from hushtop.css, ported 1:1
+   under the scope at the card's REAL 252x252 (fitWgPreviews scales the
+   whole card down). The old port carried a hand-shrunk subset — no base
+   disc (square, transparent), no groove gradient, no sheen, the hub
+   positioned against the whole card, a 36px transport — so the gallery
+   showed a different, misaligned widget. Every value below is the
+   desktop rule verbatim; the disc is the playing look (bright, static:
+   the stub track is mid-song, and previews do not animate). */
+.wprev .media-cd {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  padding: 0;
 }
-.wprev .media-cover-wrap {
+.wprev .media-disc {
   position: relative;
-  width: 84px;
-  height: 84px;
-  flex: 0 0 auto;
+  width: 148px;
+  height: 148px;
+  border-radius: 50%;
   overflow: hidden;
-  border-right: 1px solid var(--stroke-soft);
   background: var(--field);
+  box-shadow: inset 0 0 0 1px var(--stroke-soft);
 }
-.wprev .media-cover {
+.wprev .media-disc.nude {
+  background: repeating-radial-gradient(
+    circle at 50% 50%,
+    var(--disc-a) 0 2px,
+    var(--disc-b) 2px 5px
+  );
+}
+.wprev .media-disc-sheen {
   position: absolute;
   inset: 0;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-  display: block;
-  filter: grayscale(1) contrast(1.04);
+  border-radius: 50%;
+  background:
+    conic-gradient(
+      from 24deg,
+      transparent 0 28deg,
+      rgba(255, 255, 255, 0.12) 46deg,
+      transparent 78deg,
+      transparent 205deg,
+      rgba(255, 255, 255, 0.07) 228deg,
+      transparent 262deg
+    ),
+    repeating-radial-gradient(
+      circle at 50% 50%,
+      rgba(0, 0, 0, 0.1) 0 1.5px,
+      transparent 1.5px 4px
+    );
+  pointer-events: none;
 }
-.wprev .media-meta {
-  flex: 1 1 auto;
-  min-width: 0;
+.wprev .media-disc-hole {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+  border-radius: 50%;
+  background: var(--paper);
+  box-shadow:
+    0 0 0 1px var(--stroke-soft),
+    0 0 0 4px var(--paper),
+    0 0 0 5px var(--stroke-soft);
+  display: grid;
+  place-items: center;
+}
+.wprev .media-disc-hole::after {
+  content: "";
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--ink-2);
+}
+.wprev .media-ctrl {
+  flex: 0 0 44px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  border-top: 1px solid var(--stroke-soft);
+}
+.wprev .media-info {
+  flex: 0 0 auto;
+  padding: 6px 12px 2px;
   display: flex;
   flex-direction: column;
-  padding: 12px 12px 9px 11px;
+  align-items: center;
+  gap: 2px;
+  min-height: 0;
 }
 .wprev .media-title {
-  font-size: 13px;
+  align-self: stretch;
+  text-align: center;
+  font-size: 12.5px;
   font-weight: 600;
   line-height: 16px;
   color: var(--ink);
@@ -953,34 +1027,14 @@ html, body {
   text-overflow: ellipsis;
 }
 .wprev .media-artist {
-  font-size: 11px;
+  align-self: stretch;
+  text-align: center;
+  font-size: 10.5px;
   line-height: 14px;
   color: var(--ink-2);
-  margin-top: 3px;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
-}
-.wprev .media-status {
-  margin-top: auto;
-  display: flex;
-  align-items: center;
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 1.4px;
-  color: var(--ink-2);
-}
-.wprev .media-band {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-}
-.wprev .media-transport {
-  flex: 0 0 112px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 9px;
 }
 .wprev .media-btn {
   width: 30px;
@@ -1000,25 +1054,80 @@ html, body {
   background: var(--media-play-bg);
   color: #f7f5ee;
 }
-.wprev .media-viz-sep {
-  width: 1px;
-  align-self: stretch;
-  background: var(--stroke-soft);
+
+/* the lyrics preview: the hushtop.css .ly-* rules ported under the scope —
+   they were never ported, so the mini card rendered as bare unstyled text.
+   The stub IS the synced look (no .synced gate): dim lines, the active one
+   lifted to ink. The body doesn't scroll in a preview — the edge fade
+   stands in for the scrollbar. */
+.wprev .ly-head {
   flex: 0 0 auto;
-}
-.wprev .media-viz {
-  flex: 1 1 auto;
+  padding: 15px 12px 8px;
+  border-bottom: 1px solid var(--stroke-soft);
   min-width: 0;
-  display: flex;
-  align-items: flex-end;
-  justify-content: space-between;
-  padding: 8px 10px 0 11px;
 }
-.wprev .media-viz i {
-  flex: 0 0 5px;
-  width: 5px;
-  height: 3px;
-  background: var(--ink-2);
+.wprev .ly-head-title {
+  font-size: 13px;
+  font-weight: 600;
+  line-height: 16px;
+  color: var(--ink);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wprev .ly-head-artist {
+  font-size: 11px;
+  line-height: 14px;
+  color: var(--ink-2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wprev .ly-note {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 1.4px;
+  text-transform: uppercase;
+  color: var(--ink-2);
+  opacity: 0.72;
+  padding: 7px 12px 5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wprev .ly-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 2px 12px 12px;
+  scrollbar-width: none;
+  mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent 0,
+    #000 10px,
+    #000 calc(100% - 14px),
+    transparent 100%
+  );
+}
+.wprev .ly-line {
+  font-size: 12px;
+  line-height: 19px;
+  color: color-mix(in srgb, var(--ink-2) 62%, var(--paper));
+  padding: 2px 0;
+  overflow-wrap: anywhere;
+}
+.wprev .ly-line.on {
+  color: var(--ink);
+  font-weight: 600;
 }
 
 .wprev .fx-row {

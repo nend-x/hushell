@@ -691,17 +691,6 @@ function playWipe(dto, fromSpace) {
   const cards = (dto.spaces[incoming] || { widgets: [], notepads: [] });
   for (const w of cards.widgets) iconsNextEl.appendChild(staticCard(w, incoming, w.kind));
   for (const n of cards.notepads) iconsNextEl.appendChild(staticCard(n, incoming, "notes"));
-  // The second-desktop switcher is GLOBAL: it rides the incoming desktop
-  // even when its record lives on the other one — it must never blink out
-  // mid-wipe (it is the control that switches back).
-  if (!dto.dual) {
-    for (let s = 0; s < (dto.spaces || []).length; s++) {
-      if (s === incoming) continue;
-      for (const w of (dto.spaces[s] || { widgets: [] }).widgets || []) {
-        if (w.kind === "spaces") iconsNextEl.appendChild(staticCard(w, incoming, w.kind));
-      }
-    }
-  }
 
   iconsNextEl.style.clipPath = "inset(0 0 0 100%)";
   wipeLineEl.style.left = "100%";
@@ -1590,48 +1579,33 @@ function lockBody() {
   return { lockBtn: btn };
 }
 
-const MEDIA_VIZ_BARS = 18;
-const MEDIA_VIZ_MAX = 45; // px — band inner height minus its 8px top pad
-const MEDIA_VIZ_SPREAD = Array.from(
-  { length: MEDIA_VIZ_BARS },
-  (_, i) => 0.8 + 0.2 * (((i * 7) % 5) / 4)
-);
-
+// THE CD WIDGET: the artwork IS the disc. It spins while the song plays,
+// freezes (dimmed) when it pauses, and falls back to a grooved nude disc
+// when the player ships no art. Controls sit directly under the disc, the
+// title/artist under them — and that is the whole card: the spectrum
+// footer is gone, the disc owns the space it used to take.
 function mediaBody(el) {
-  const top = document.createElement("div");
-  top.className = "media-top";
+  const cd = document.createElement("div");
+  cd.className = "media-cd";
 
-  const coverWrap = document.createElement("div");
-  coverWrap.className = "media-cover-wrap";
-  const cover = document.createElement("img");
-  cover.className = "media-cover";
-  cover.alt = "";
-  cover.draggable = false;
-  cover.hidden = true;
-  coverWrap.appendChild(cover);
+  const disc = document.createElement("div");
+  disc.className = "media-disc";
+  const art = document.createElement("img");
+  art.className = "media-disc-art";
+  art.alt = "";
+  art.draggable = false;
+  art.hidden = true;
+  const sheen = document.createElement("div");
+  sheen.className = "media-disc-sheen";
+  const hole = document.createElement("div");
+  hole.className = "media-disc-hole";
+  disc.appendChild(art);
+  disc.appendChild(sheen);
+  disc.appendChild(hole);
+  cd.appendChild(disc);
 
-  const meta = document.createElement("div");
-  meta.className = "media-meta";
-  const title = document.createElement("div");
-  title.className = "media-title";
-  const artist = document.createElement("div");
-  artist.className = "media-artist";
-  const status = document.createElement("div");
-  status.className = "media-status";
-  const statusText = document.createElement("span");
-  status.appendChild(statusText);
-  meta.appendChild(title);
-  meta.appendChild(artist);
-  meta.appendChild(status);
-
-  top.appendChild(coverWrap);
-  top.appendChild(meta);
-
-  const band = document.createElement("div");
-  band.className = "media-band";
-
-  const transport = document.createElement("div");
-  transport.className = "media-transport";
+  const ctrl = document.createElement("div");
+  ctrl.className = "media-ctrl";
 
   const prev = document.createElement("button");
   prev.className = "media-btn";
@@ -1654,25 +1628,18 @@ function mediaBody(el) {
   next.innerHTML =
     '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" stroke="none"><path d="M16 5h2v14h-2zM4 5l11 7L4 19z"/></svg>';
 
-  transport.appendChild(prev);
-  transport.appendChild(play);
-  transport.appendChild(next);
+  ctrl.appendChild(prev);
+  ctrl.appendChild(play);
+  ctrl.appendChild(next);
 
-  const sep = document.createElement("div");
-  sep.className = "media-viz-sep";
-
-  const viz = document.createElement("div");
-  viz.className = "media-viz";
-  const vizBars = [];
-  for (let i = 0; i < MEDIA_VIZ_BARS; i++) {
-    const b = document.createElement("i");
-    viz.appendChild(b);
-    vizBars.push(b);
-  }
-
-  band.appendChild(transport);
-  band.appendChild(sep);
-  band.appendChild(viz);
+  const info = document.createElement("div");
+  info.className = "media-info";
+  const title = document.createElement("div");
+  title.className = "media-title";
+  const artist = document.createElement("div");
+  artist.className = "media-artist";
+  info.appendChild(title);
+  info.appendChild(artist);
 
   const empty = document.createElement("div");
   empty.className = "media-empty";
@@ -1695,44 +1662,376 @@ function mediaBody(el) {
   play.addEventListener("click", () => act("toggle"));
   next.addEventListener("click", () => act("next"));
 
-  const lastH = new Array(MEDIA_VIZ_BARS).fill(3);
-  function paintViz(levels) {
-    for (let i = 0; i < MEDIA_VIZ_BARS; i++) {
-      const src = Math.min(11, Math.floor((i * 12) / MEDIA_VIZ_BARS));
-      const lvl = Math.max(0, Math.min(1, (levels && levels[src]) || 0));
-      const h = Math.max(3, Math.round(lvl * MEDIA_VIZ_SPREAD[i] * MEDIA_VIZ_MAX));
-      if (h !== lastH[i]) {
-        lastH[i] = h;
-        vizBars[i].style.height = h + "px";
-      }
-    }
-  }
-
   function paint(m) {
     const has = !!(m && (m.title || m.artist || m.cover));
     empty.style.display = has ? "none" : "";
-    top.style.display = has ? "" : "none";
-    band.style.display = has ? "" : "none";
+    cd.style.display = has ? "" : "none";
+    ctrl.style.display = has ? "" : "none";
+    info.style.display = has ? "" : "none";
     el.classList.toggle("playing", !!(m && m.playing));
     if (!has) return;
     title.textContent = m.title || "";
     artist.textContent = m.artist || "";
-    statusText.textContent = "PAUSED";
-    status.style.display = m.playing ? "none" : "";
     if (m.cover) {
-      cover.src = "data:image/png;base64," + m.cover;
-      cover.hidden = false;
+      const src = "data:image/png;base64," + m.cover;
+      if (!art.src.endsWith(m.cover)) art.src = src;
+      art.hidden = false;
+      disc.classList.remove("nude");
     } else {
-      cover.hidden = true;
-      cover.removeAttribute("src");
+      art.hidden = true;
+      art.removeAttribute("src");
+      disc.classList.add("nude");
     }
     play.innerHTML = m.playing ? PAUSE_P : PLAY_P;
   }
 
   return {
-    top, band, empty, coverWrap, cover, title, artist, status,
-    play, prev, next, viz, vizBars, paint, paintViz,
+    cd, disc, art, ctrl, info, empty,
+    title, artist, play, prev, next, paint,
   };
+}
+
+// ---- lyrics (for the currently playing song, may be wrong in special cases)
+
+function lyricsBody(el) {
+  const head = document.createElement("div");
+  head.className = "ly-head";
+  const headTitle = document.createElement("div");
+  headTitle.className = "ly-head-title";
+  const headArtist = document.createElement("div");
+  headArtist.className = "ly-head-artist";
+  head.appendChild(headTitle);
+  head.appendChild(headArtist);
+
+  const empty = document.createElement("div");
+  empty.className = "ly-empty";
+  empty.textContent = "NOTHING PLAYING";
+
+  const body = document.createElement("div");
+  body.className = "ly-body";
+  const note = document.createElement("div");
+  note.className = "ly-note";
+  const list = document.createElement("div");
+  list.className = "ly-list";
+  body.appendChild(note);
+  body.appendChild(list);
+
+  // Manual scrolling pauses the autoscroll for a few seconds — the reader
+  // is somewhere else, the machine does not fight them for the view.
+  let manualUntil = 0;
+  body.addEventListener("wheel", () => {
+    manualUntil = performance.now() + 4000;
+  }, { passive: true });
+
+  let state = "empty"; // empty | loading | none | synced | words | plain
+  let curKey = "";
+  let lines = [];
+  let words = []; // per-word karaoke lines (parallel to lines when present)
+  let activeIdx = -1;
+  // WHAT THE SEARCH SAW: the duration the current track's fetch ran with,
+  // the track's own identity for the one late re-ask, and whether that
+  // re-ask already happened. A track change fires the search the moment
+  // the title arrives — players that publish their timeline a beat late
+  // made that first search run duration-blind, and a duration-blind search
+  // cannot tell the studio cut from a live one. The first hush:media_pos
+  // anchor carrying a REAL duration re-asks once; the backend re-runs the
+  // search (its cache refuses duration-blind entries once a real duration
+  // exists) and the better-matched result replaces the old one in place.
+  let fetchedDur = 0;
+  let trackMeta = { title: "", artist: "", album: "" };
+  let reaskAttempts = 0;
+
+  // The result gate: a WORSE result never wipes what is on screen. The
+  // late re-ask re-runs the whole search — a miss (or a plain-text
+  // demotion) arriving for a track that already shows synced words is a
+  // downgrade, not an answer.
+  function acceptResult(dto) {
+    if (!dto) return;
+    const have = state === "synced" || state === "words" || state === "plain";
+    if (!dto.found && have) return;
+    if (!dto.synced && (state === "synced" || state === "words")) return;
+    apply(dto);
+  }
+
+  // The playback anchor: hush:media_pos (1 Hz) re-stamps it, the highlighter
+  // interpolates between stamps so the line tracking is smooth, not steppy.
+  // Small anchor corrections are SLEWED (the clock keeps running and biases
+  // toward the truth) — snapping every 1 Hz stamp made the clock stutter
+  // backward and the active line flap next/previous; only a real jump
+  // (seek, resume, track change) snaps.
+  const anchor = { p: 0, at: 0, playing: false };
+  const ANCHOR_SLEW = 0.9; // s of disagreement that still counts as noise
+  function nowPos() {
+    if (!anchor.playing) return anchor.p;
+    return anchor.p + (performance.now() - anchor.at) / 1000;
+  }
+
+  function setNote(text) {
+    note.textContent = text || "";
+    note.style.display = text ? "" : "none";
+  }
+
+  function render() {
+    el.classList.toggle("has", state !== "empty");
+    el.classList.toggle("synced", state === "synced" || state === "words");
+    empty.style.display = state === "empty" ? "" : "none";
+    head.style.display = state === "empty" ? "none" : "";
+    body.style.display = state === "empty" ? "none" : "";
+    if (state === "empty") return;
+    list.replaceChildren();
+    if (state === "loading") {
+      setNote("looking for lyrics\u2026");
+    } else if (state === "none") {
+      setNote("no lyrics found");
+    } else if (state === "synced" || state === "words") {
+      // THE NOTE FIX: the loading note used to survive into the lyric
+      // states (render never silenced it) — the reader saw "looking for
+      // lyrics\u2026" under fully rendered lyrics forever. The note row
+      // only ever speaks for loading / no-lyrics-found.
+      setNote("");
+      for (let i = 0; i < lines.length; i++) {
+        const d = document.createElement("div");
+        d.className = "ly-line";
+        const wl = words[i];
+        if (state === "words" && wl && wl.words.length) {
+          for (const w of wl.words) {
+            const s = document.createElement("span");
+            s.className = "w" + (w.sp ? " sp" : "");
+            s.textContent = w.w;
+            d.appendChild(s);
+          }
+        } else {
+          d.textContent = lines[i].text;
+        }
+        list.appendChild(d);
+      }
+      activeIdx = -1;
+    } else {
+      setNote("");
+      for (const text of lastMeta.plainLines) {
+        const d = document.createElement("div");
+        d.className = "ly-line";
+        d.textContent = text;
+        list.appendChild(d);
+      }
+    }
+  }
+
+  const lastMeta = { agree: 1, sources: [], plainLines: [] };
+
+  function apply(dto) {
+    if (!dto || !dto.found) {
+      state = "none";
+      render();
+      return;
+    }
+    lastMeta.agree = dto.agreement || 1;
+    lastMeta.sources = dto.sources || [];
+    if (dto.synced && dto.lines && dto.lines.length) {
+      lines = dto.lines;
+      words = Array.isArray(dto.words) ? dto.words : [];
+      if (words.length !== lines.length) words = []; // karaoke must be parallel
+      state = words.length ? "words" : "synced";
+    } else {
+      words = [];
+      // Plain text: keep interior blank lines (verse spacing), drop the
+      // leading/trailing padding the sites like to ship.
+      lastMeta.plainLines = (dto.plain || "").split("\n").map((s) => s.trimEnd());
+      while (lastMeta.plainLines.length && !lastMeta.plainLines[0]) lastMeta.plainLines.shift();
+      while (lastMeta.plainLines.length && !lastMeta.plainLines[lastMeta.plainLines.length - 1]) lastMeta.plainLines.pop();
+      state = "plain";
+    }
+    body.scrollTop = 0;
+    render();
+  }
+
+  // ---- track changes -------------------------------------------------------
+
+  function onTrack(m) {
+    const has = !!(m && (m.title || m.artist));
+    if (!has) {
+      curKey = "";
+      state = "empty";
+      render();
+      return;
+    }
+    headTitle.textContent = m.title || "";
+    headArtist.textContent = m.artist || "";
+    const key = (m.title || "") + "\u{1}" + (m.artist || "");
+    if (key === curKey) return; // same track — pause/play keeps the lyrics
+    curKey = key;
+    trackMeta = {
+      title: m.title || "",
+      artist: m.artist || "",
+      album: m.album || "",
+    };
+    fetchedDur = m.duration || 0;
+    reaskAttempts = 0;
+    state = "loading";
+    render();
+    invoke("lyrics_fetch", {
+      title: m.title || "",
+      artist: m.artist || "",
+      album: m.album || "",
+      duration: m.duration || 0,
+    })
+      .then((dto) => {
+        if (dto) acceptResult(dto); // cached — render now; else await hush:lyrics
+      })
+      .catch(() => {
+        if (key === curKey) {
+          state = "none";
+          render();
+        }
+      });
+  }
+
+  function onResult(key, dto) {
+    if (key !== curKey) return; // stale — the track moved on
+    acceptResult(dto);
+  }
+
+  function onPos(p) {
+    const now = performance.now();
+    const cur = nowPos();
+    const target = p.position || 0;
+    const playing = !!p.playing;
+    const diff = target - cur;
+    if (!playing || Math.abs(diff) > ANCHOR_SLEW) {
+      // pause boundary, seek, track change or the very first stamp: snap
+      anchor.p = target;
+      anchor.at = now;
+      anchor.playing = playing;
+    } else {
+      // noise: keep the clock running, bias it toward the truth so the
+      // 1 Hz stamps cannot make the highlight stutter backward
+      anchor.p = cur + diff * 0.4;
+      anchor.at = now;
+      anchor.playing = true;
+    }
+    // THE LATE-DURATION RE-ASK: the search ran duration-blind (the player
+    // had not published its timeline yet) and a real duration just showed
+    // up — re-run it, quietly: the current lyric stays on screen until a
+    // better-matched result lands (the gate above drops downgrades). A
+    // None means a search is still in flight for this track — the next 1 Hz
+    // anchor retries (bounded), so a slow player's timeline never costs
+    // the match.
+    const realDur = p.duration || 0;
+    if (
+      curKey &&
+      reaskAttempts < 20 &&
+      realDur >= 3 &&
+      realDur - fetchedDur > 3
+    ) {
+      reaskAttempts += 1;
+      invoke("lyrics_fetch", {
+        title: trackMeta.title,
+        artist: trackMeta.artist,
+        album: trackMeta.album,
+        duration: realDur,
+      })
+        .then((dto) => {
+          if (dto) {
+            fetchedDur = realDur; // the answer IS duration-aware — stop asking
+            acceptResult(dto);
+          }
+        })
+        .catch(() => {});
+    }
+  }
+
+  // ---- the highlighter -----------------------------------------------------
+  // The line switches when the SINGER moves to it, not when the previous
+  // one runs out of words: a line becomes active at its own LRC timestamp
+  // (a hair EARLY — LEAD — so it never reads late), and it only ever moves
+  // BACKWARD for a real seek (the clock more than BACKGUARD before the
+  // current line's start). Ordinary clock jitter can no longer make the
+  // highlight flip forward/backward a couple of times.
+
+  const LEAD = 0.18; // s of anticipation on every line start
+  const BACKGUARD = 1.2; // s of genuine rewind the backward move must prove
+  const SEEK_JUMP = 1.5; // s of backward motion a single tick may never make
+
+  // THE SEEK-BACK WIPE: the karaoke lights only ever spread — a line the
+  // singer passed keeps its words lit, so the moment the listener comes
+  // back to an earlier point every line after that point still reads as
+  // read. Any real rewind hands those lines their future back: every span
+  // AFTER the point goes dark again. Lines BEFORE the point stay lit —
+  // they were genuinely sung — and the active line re-sweeps from the
+  // clock on the ticks that follow. Text-only synced lines carry no
+  // spans, so the wipe is a no-op there by construction.
+  function wipeAfter(idx) {
+    const kids = list.children;
+    for (let i = idx + 1; i < kids.length; i++) {
+      const spans = kids[i].children;
+      for (let j = 0; j < spans.length; j++) spans[j].classList.remove("lit");
+    }
+  }
+
+  let prevPos = 0; // the jump detector's reference frame
+
+  const poll = setInterval(() => {
+    if ((state !== "synced" && state !== "words") || !lines.length) return;
+    const pos = nowPos();
+    // last line whose (start - lead) <= pos, lead halved when the previous
+    // line starts too close (never highlight two lines in one breath)
+    let idx = -1;
+    for (let i = 0; i < lines.length; i++) {
+      const start = lines[i].t;
+      const lead = i > 0
+        ? Math.min(LEAD, Math.max(0, start - lines[i - 1].t) / 2)
+        : LEAD;
+      if (start - lead <= pos) idx = i;
+      else break;
+    }
+    if (idx < activeIdx) {
+      // going backward: only a real seek may rewind the highlight — the
+      // clock must be BEFORE the current line's start by more than the
+      // backguard; anything less is jitter and the line holds
+      const cur = lines[activeIdx];
+      if (!(cur && pos < cur.t - BACKGUARD)) idx = activeIdx;
+    }
+    if (idx !== activeIdx) {
+      const rewind = idx < activeIdx;
+      activeIdx = idx;
+      const kids = list.children;
+      for (let i = 0; i < kids.length; i++) {
+        kids[i].classList.toggle("on", i === idx);
+      }
+      if (rewind) wipeAfter(idx); // crossed lines backward — unmark what is ahead now
+      if (idx >= 0 && performance.now() >= manualUntil) {
+        const line = kids[idx];
+        if (line) {
+          const top = line.offsetTop - body.clientHeight * 0.36;
+          body.scrollTo({ top: Math.max(0, top), behavior: "smooth" });
+        }
+      }
+    }
+    // Karaoke sweep INSIDE the active line: the current word lights as the
+    // singer reaches it (word.t), earlier words stay lit, later ones wait.
+    // Runs every tick — one line's spans, a few class toggles at most.
+    if (state === "words" && idx >= 0 && words[idx]) {
+      const line = list.children[idx];
+      if (line) {
+        const spans = line.children;
+        const ws = words[idx].words;
+        for (let i = 0; i < spans.length; i++) {
+          spans[i].classList.toggle("lit", i < ws.length && ws[i].t <= pos);
+        }
+      }
+    }
+    // The same-line seek-back: the user came back to a point INSIDE the
+    // line that is still active (no line crossing, so the rewind branch
+    // above never fires) — the clock jumping backward more than a tick
+    // can ever manufacture (the slew bias drifts at most ~0.04 s per
+    // 120 ms tick) IS the seek, and everything after the point unmarks.
+    // Catching it here also covers scrubs while PAUSED, where the line
+    // index has no reason to move at all.
+    if (pos < prevPos - SEEK_JUMP) wipeAfter(idx);
+    prevPos = pos;
+  }, 120);
+
+  return { head, body, empty, onTrack, onResult, onPos, poll };
 }
 
 // ---- widget factory + diff render ---------------------------------------
@@ -1789,9 +2088,28 @@ function makeWidget(w, space) {
     el.appendChild(refs.lockBtn);
   } else if (w.kind === "media") {
     Object.assign(refs, mediaBody(el));
-    el.appendChild(refs.top);
-    el.appendChild(refs.band);
+    el.appendChild(refs.cd);
+    el.appendChild(refs.ctrl);
+    el.appendChild(refs.info);
     el.appendChild(refs.empty);
+    // hush:media only fires when title|artist|playing CHANGES — a widget
+    // rebuilt by a desktop switch (every space owns its own media card)
+    // would sit on the empty state until the user toggled playback. Feed
+    // it the cached snapshot now, and let media_now confirm — the same
+    // restore the lyrics widget already does.
+    refs.paint(lastMedia);
+    invoke("media_now")
+      .then((m) => paintMedia(m))
+      .catch(() => {});
+  } else if (w.kind === "lyrics") {
+    Object.assign(refs, lyricsBody(el));
+    el.appendChild(refs.head);
+    el.appendChild(refs.body);
+    el.appendChild(refs.empty);
+    refs.onTrack(lastMedia);
+    invoke("media_now")
+      .then((m) => refs.onTrack(m))
+      .catch(() => {});
   }
 
   widgetsEl.appendChild(el);
@@ -1810,11 +2128,10 @@ function makeWidget(w, space) {
   return entry;
 }
 
-// The widget roster a render pass draws: every card of the VISIBLE spaces,
-// plus — single display only — the second-desktop switcher from ANY space
-// (it is global: it rides both desktops, so the control that switches is
-// always on screen). In dual mode each monitor shows its own space, so the
-// switcher simply lives where it was dropped.
+// The widget roster a render pass draws: every card of the VISIBLE spaces —
+// nothing else. Each desktop owns its cards outright, the switcher included:
+// a desktop without it shows none, and going back means adding one there
+// (the start menu's widget tab is always reachable).
 function widgetRoster() {
   const roster = [];
   const added = new Set();
@@ -1826,16 +2143,6 @@ function widgetRoster() {
       }
     }
   }
-  if (view && !view.dual) {
-    for (let s = 0; s < (view.spaces || []).length; s++) {
-      for (const w of (view.spaces[s] || {}).widgets || []) {
-        if (w.kind === "spaces" && !added.has(w.id)) {
-          added.add(w.id);
-          roster.push([w, s]);
-        }
-      }
-    }
-  }
   return roster;
 }
 
@@ -1843,9 +2150,13 @@ function renderWidgets() {
   if (!view) return;
   const seen = new Set();
   for (const [w, space] of widgetRoster()) {
-    if (w.kind === "media" && (w.w !== 288 || w.h !== 162)) {
-      w.w = 288;
-      w.h = 162;
+    if (w.kind === "media" && (w.w !== 252 || w.h !== 252)) {
+      w.w = 252;
+      w.h = 252; // whole grid rows again (18 × 14) — the 6px above the disc paid for it
+    }
+    if (w.kind === "lyrics" && (w.w !== 252 || w.h !== 288)) {
+      w.w = 252;
+      w.h = 288;
     }
     seen.add(w.id);
     const e = widgets.get(w.id);
@@ -1892,19 +2203,32 @@ function paintMedia(m) {
     if (w.kind === "media" && w.refs && w.refs.paint) w.refs.paint(m);
   }
 }
-listen("hush:media", (e) => paintMedia(e.payload)).catch(console.error);
-invoke("media_now")
-  .then((m) => paintMedia(m))
-  .catch(() => {});
-
-listen("hush:levels", (e) => {
-  const v = e.payload || [];
+listen("hush:media", (e) => {
+  paintMedia(e.payload);
   for (const w of widgets.values()) {
-    if (w.kind === "media" && w.refs && w.refs.paintViz) {
-      w.refs.paintViz(v);
+    if (w.kind === "lyrics" && w.refs && w.refs.onTrack) w.refs.onTrack(e.payload);
+  }
+}).catch(console.error);
+
+// The lyrics widget's 1 Hz playback anchor (position interpolation).
+listen("hush:media_pos", (e) => {
+  for (const w of widgets.values()) {
+    if (w.kind === "lyrics" && w.refs && w.refs.onPos) w.refs.onPos(e.payload || {});
+  }
+}).catch(console.error);
+
+// The answer to a lyrics_fetch — keyed by title+artist, stale keys dropped.
+listen("hush:lyrics", (e) => {
+  const msg = e.payload || {};
+  for (const w of widgets.values()) {
+    if (w.kind === "lyrics" && w.refs && w.refs.onResult) {
+      w.refs.onResult(msg.key, msg.lyrics);
     }
   }
 }).catch(console.error);
+invoke("media_now")
+  .then((m) => paintMedia(m))
+  .catch(() => {});
 
 // ---------- the widget ghost (dragged out of the start menu) ----------------
 
@@ -2000,14 +2324,45 @@ function desktopFxKind(kind) {
   return kind === "snow" || kind === "leaves" || kind === "star" ? kind : "none";
 }
 
+function fxSyncUi(k) {
+  for (const hook of effectUiHooks) {
+    try { hook(k); } catch (e) { /* nothing */ }
+  }
+}
+
 function fxSet(kind) {
-  const k = hushFx.set(fxSuspended || fxBooting ? "none" : desktopFxKind(kind));
+  const k = desktopFxKind(kind);
+  if (fxSuspended || fxBooting) {
+    // suspension/boot: the ENGINE is not touched at all — a caller while
+    // locked (a stray spaces payload, a config replay) must never stop or
+    // respawn the frozen scene; only the UI mirror + the canvas gate move.
+    // The engine keeps its kind; the unlock restore reconciles.
+    fx.classList.remove("on");
+    fxSyncUi(k);
+    return;
+  }
+  const eff = hushFx.set(k);
   // the canvas owns its own opacity: .on fades the particles in (boot,
   // unlock, a fresh pick) and out (lock) — the engine only ever starts/stops
   // under a finished fade
-  fx.classList.toggle("on", k !== "none");
-  for (const hook of effectUiHooks) {
-    try { hook(k); } catch (e) { /* nothing */ }
+  fx.classList.toggle("on", eff !== "none");
+  fxSyncUi(eff);
+}
+
+// The unlock restore. The engine holds the FROZEN lock-time scene (pause()
+// kept kind, particles and the painted frame): the same pick as before the
+// lock → resume() continues the EXACT same particles from their frozen
+// positions — the sky is simply still there when the canvas fades back in,
+// no respawn, no bare-canvas second. A pick that changed while locked takes
+// the normal (re)start path instead.
+function fxRestore() {
+  const k = desktopFxKind(fxUserKind);
+  if (k !== "none" && hushFx.kind() === k) {
+    hushFx.resume();
+    fx.classList.add("on");
+    fxSyncUi(k);
+  } else {
+    fxSet(fxUserKind);
   }
 }
 
@@ -2105,31 +2460,48 @@ document.body.classList.add("boot");
 // Lock: icons/widgets fade out slowly, the veil calms the sheet, the line
 // sweeps right -> left and erases the ruled lines with it, and the
 // (transparent) lock window rises its ink stack once the sweep is done.
-// The desktop's own effect steps aside for all of it — the sheet the lock
+// The desktop's own effect FREEZES for all of it — the sheet the lock
 // choreography draws on must be bare; the lock screen then runs THE WIND
 // FARM (its own scene — always on, no option, no off switch) once the
-// animation is done, and the desktop's choice comes back with the unlock
-// reveal.
-// Unlock: the line sweeps back left -> right with the rules sliding in
-// behind it, the veil lifts, icons/widgets fade in AFTER the sweep — the
+// animation is done, and the desktop's own scene comes back exactly as it
+// left at the unlock reveal.
+// Unlock: the wind farm melts out FIRST (0.6s) — the comeback holds the
+// locked wash until it is gone; then the veil lifts, the line sweeps back
+// left -> right with the rules sliding in behind it, icons/widgets fade in
+// after the sweep with the frozen desktop scene fading in alongside — the
 // backend restores the minimized windows last of all.
+// The comeback is sequenced BEHIND the lock screen's own fade-out: the
+// wind farm melts over 0.6s (its engine clears at 700ms), so the desktop
+// holds the locked wash until then and the reveal starts only once the
+// overlay is truly empty — never underneath a still-fading turbine scene.
+// unlockSeq invalidates a pending choreography when a re-lock lands
+// mid-unlock (the show handler bumps it): every unlock timer re-checks its
+// own seq, so a stale callback can never play over a fresh lock. fxSuspended
+// is NOT a valid guard here — it holds TRUE through the whole unlock (it is
+// the gate that keeps stray callers off the frozen engine) and only the
+// finish step clears it.
+const WIND_FADE_MS = 700;
+let unlockSeq = 0;
+
 listen("lockscreen:show", () => {
   bootPlayed = true; // a lock supersedes an incomplete boot
   fxBooting = false; // the gate must never outlive the boot — unlock replays the pick
+  unlockSeq++; // a re-lock kills any unlock choreography still in flight
   document.body.classList.add("locked", "booted");
-  document.body.classList.remove("boot");
-  // suspend (not clear) the desktop effect: fxSet keeps forcing "none" for
-  // every caller while the flag is up — a stray spaces payload mid-lock
-  // cannot sneak the scene back onto the bare sheet. The PARTICLES melt out
-  // first (the .on class drops, 0.6s CSS), and the engine stops only after
-  // the fade — an instant clear would make them vanish mid-air.
+  document.body.classList.remove("boot", "unlocking");
+  // suspend (not clear) the desktop effect: every fxSet caller is gated to
+  // the UI mirror while the flag is up — a stray spaces payload mid-lock
+  // cannot sneak the scene back onto the bare sheet, and nothing stops or
+  // respawns the engine either. The PARTICLES melt out first (the .on class
+  // drops, 0.6s CSS), then the engine FREEZES — kind, particles and the
+  // painted frame all survive for the unlock resume.
   fxSuspended = true;
   clearTimeout(fxFadeTimer);
   fx.classList.remove("on");
   fxFadeTimer = setTimeout(() => {
-    if (fxSuspended) fxSet("none"); // superseded by an unlock → the timer no-ops
+    if (fxSuspended) hushFx.pause(); // superseded by an unlock → the timer no-ops
   }, 700);
-  ulog("choreo: lock — desktop effect fades out, then suspends");
+  ulog("choreo: lock — desktop effect fades out, then freezes in place");
   // the icons/widgets fade out first (0.9s); the line starts crossing once
   // they are half-gone — the erase reads as the second beat of one motion
   setTimeout(() => sweepDesk(-1), 550);
@@ -2137,37 +2509,47 @@ listen("lockscreen:show", () => {
 }).catch(() => {});
 
 listen("lockscreen:hide", () => {
-  document.body.classList.add("unlocking");
-  document.body.classList.remove("locked");
-  sweepDesk(1);
-  ulog("choreo: unlock — the line sweeps back left -> right, rules slide in");
+  const seq = ++unlockSeq;
+  clearTimeout(fxFadeTimer); // a pending lock-time freeze loses to the unlock
+  ulog("choreo: unlock — holding the wash until the wind farm has melted out");
   setTimeout(() => {
-    document.body.classList.remove("unlocking");
-    ulog("choreo: unlock — icons and widgets fade in");
-  }, SWEEP_MS);
-  // the desktop effect returns AFTER the sweep — the exact mirror of the
-  // lock (the lock screen's wind farm starts when the lock animation is
-  // done). fxSuspended holds through the sweep, so even a stray spaces
-  // payload mid-unlock cannot dress the sheet while the line is still
-  // crossing. The restore replays fxUserKind — the user's own pick,
-  // untouched by the suspension — and fxSet fades the particles back in.
-  setTimeout(() => {
-    fxSuspended = false;
-    fxSet(fxUserKind);
-    ulog("choreo: unlock — desktop effect restored (" + fxUserKind + ")");
-  }, SWEEP_MS);
+    if (seq !== unlockSeq) return; // re-locked mid-choreography
+    document.body.classList.add("unlocking");
+    document.body.classList.remove("locked");
+    sweepDesk(1);
+    ulog("choreo: unlock — the wind is gone; the line sweeps back left -> right, rules slide in");
+    setTimeout(() => {
+      if (seq !== unlockSeq) return;
+      document.body.classList.remove("unlocking");
+      ulog("choreo: unlock — icons and widgets fade in");
+      // the desktop effect returns WITH the icon fade — the exact mirror
+      // of the lock (the lock screen's wind farm started when the lock
+      // animation was done). The frozen scene resumes seamlessly: the
+      // particles are already mid-flight when the canvas fades in.
+      fxSuspended = false;
+      fxRestore();
+      ulog("choreo: unlock — desktop effect restored (" + fxUserKind + ")");
+      // the fade runs 900ms — when it lands the UNLOCKING choreography is
+      // fully finished and the lock's AHK hooks hand back to the session
+      // pair (stale by construction: the seq check above gates re-locks)
+      setTimeout(() => {
+        if (seq !== unlockSeq) return;
+        invoke("hook_unlock_done").catch(() => {});
+      }, 900);
+    }, SWEEP_MS);
+  }, WIND_FADE_MS);
 }).catch(() => {});
 
-// The overlay is TRULY gone (the backend hides the lock window once the
-// sweep is over). This is the authoritative end-of-lock: the suspension
-// cannot outlive it, the desktop's own effect is re-asserted, and the
-// engine is KICKED — a render loop that stalled while the transparent
-// overlay covered the webview restarts right here. Whatever went wrong
-// under the overlay, "unlock leaves the desktop bare" cannot survive
-// this event.
+// The overlay is TRULY gone (the backend hides the lock window at 1700ms —
+// past the wind melt, mid-comeback). The comeback choreography may still be
+// mid-flight at this point; while fxSuspended holds, the pending unlock
+// timer owns the restore and this event stays out of its way. Once the
+// choreography has finished (or a hide event was lost entirely), this is
+// the safety net that re-asserts the desktop's own effect. No kick: the
+// engine is no longer destroyed by the lock, and resume() re-arms the loop
+// fresh at the restore — a loop cannot be left dead by the hand-off.
 listen("lockscreen:gone", () => {
-  fxSuspended = false;
-  fxSet(fxUserKind);
-  hushFx.kick();
+  if (fxSuspended) return;
+  fxRestore();
   ulog("choreo: unlock — overlay gone, desktop effect re-asserted (" + fxUserKind + ")");
 }).catch(() => {});

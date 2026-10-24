@@ -853,8 +853,8 @@ pub fn add_widget(app: &AppHandle, kind: &str) -> Result<u32, String> {
     let (col, row) = auto_widget_pos(app, a);
     match kind {
         "notes" => crate::hushtop::notepad_add(app, col, row, a),
-        "volume" | "clipboard" | "stats" | "lock" | "media" | "spaces" | "brightness"
-        | "effects" => crate::hushtop::widget_add(app, kind, col, row, a),
+        "volume" | "clipboard" | "stats" | "lock" | "media" | "lyrics" | "spaces"
+        | "brightness" | "effects" => crate::hushtop::widget_add(app, kind, col, row, a),
         other => Err(format!("unknown widget kind '{other}'")),
     }
 }
