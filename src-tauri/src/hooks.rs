@@ -21,6 +21,25 @@
 //! extracted exes let a fresh boot reap the pair a crashed session left
 //! behind — every reap verifies the process IMAGE PATH first, so a reused
 //! PID that belongs to some innocent program is never shot.
+//!
+//! THE SINGLE-INSTANCE LAW (the quick-unlock dialog round): the compiled
+//! AHK runtime shows "An older instance of this script is already running"
+//! whenever a second copy of the SAME script starts while one lives. Three
+//! things keep that dialog unreachable:
+//!
+//! 1. spawn() holds the slot lock across the WHOLE check→spawn→record
+//!    sequence — two callers can never both pass the alive-check, spawn
+//!    twice, or overwrite each other's pid stamp (which leaked an
+//!    unmanaged copy that kept the script's mutex alive forever).
+//! 2. The alive-check reads try_wait's real semantics: Ok(None) means
+//!    STILL RUNNING (the old check had it backwards — it respawned on
+//!    Ok(None), double-spawning a live pair, and no-op'd on Ok(Some(_)),
+//!    leaving a dead pair unreplaced).
+//! 3. Every lifecycle transition (boot / lock_on / lock_off / shutdown)
+//!    runs its whole kill→spawn sequence under the LIFECYCLE mutex, and
+//!    every spawn passes /force — the AHK switch that silently replaces a
+//!    stray same-script instance instead of asking. Even a copy we don't
+//!    know about can never raise the dialog.
 
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -50,6 +69,15 @@ struct HookProc {
 
 static SHELL_PROC: Mutex<Option<HookProc>> = Mutex::new(None);
 static LOCK_PROC: Mutex<Option<HookProc>> = Mutex::new(None);
+
+/// One lifecycle transition at a time. lock_on / lock_off / boot / shutdown
+/// each run their whole kill→spawn sequence under this lock, so rapid
+/// reports (a quick unlock after a lock, a double report, a boot that is
+/// still extracting while the first lock lands) can no longer interleave
+/// the halves of two transitions — the pairings that left BOTH pairs
+/// running, or spawned one script twice, are structurally gone. Order is
+/// always LIFECYCLE → slot lock, never the reverse.
+static LIFECYCLE: Mutex<()> = Mutex::new(());
 
 /// Write the child's pid next to its exe — the breadcrumb a future boot
 /// follows to reap this process if the shell dies without a goodbye.
@@ -198,27 +226,44 @@ pub fn wipe_cached() {
 }
 
 /// Spawn one companion if it is not already running under our management.
+///
+/// The slot lock is held across the WHOLE check→spawn→record sequence: the
+/// old shape dropped it between the alive-check and the bookkeeping, so two
+/// concurrent callers could both pass the check and spawn the same script
+/// twice — the loser's pid stamp then overwrote the winner's and an
+/// unmanaged copy stayed alive outside every kill path.
 fn spawn(slot: &Mutex<Option<HookProc>>, path: &PathBuf, tag: &str) {
-    {
-        let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
-        if let Some(cur) = g.as_mut() {
-            // still alive? nothing to do; a dead child gets replaced below
-            if matches!(cur.child.try_wait(), Err(_) | Ok(None)) {
-                *g = None; // dead — fall through and respawn
-            } else {
-                return;
+    let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
+    if let Some(cur) = g.as_mut() {
+        // try_wait's real contract: Ok(None) = STILL RUNNING, Ok(Some(_)) =
+        // exited. The old check matched Err(_) | Ok(None) as "dead", which
+        // respawned a LIVE pair (the second copy then met the first's AHK
+        // single-instance mutex and popped the Prompt dialog — the
+        // quick-unlock "older instance" report) and treated a DEAD pair as
+        // alive, leaving the hooks gone for the rest of the session.
+        match cur.child.try_wait() {
+            Ok(None) => return, // alive and ours — nothing to do
+            Ok(Some(_)) | Err(_) => {
+                log(&format!(
+                    "hooks: {tag} slot held a dead child — respawning"
+                ));
+                *g = None; // dead — replace below
             }
         }
     }
-    let spawned = std::process::Command::new(path)
+    match std::process::Command::new(path)
+        // The Prompt-dialog belt: /force makes the AHK runtime replace a
+        // stray same-script instance silently instead of asking. Under our
+        // serialized lifecycle this should never fire — but the dialog must
+        // be unreachable even for a copy this module does not know about.
+        .arg("/force")
         .current_dir(dir())
         .creation_flags(CREATE_NO_WINDOW)
-        .spawn();
-    match spawned {
+        .spawn()
+    {
         Ok(child) => {
             stamp_pid(path, child.id());
             log(&format!("hooks: {tag} up (pid {})", child.id()));
-            let mut g = slot.lock().unwrap_or_else(|e| e.into_inner());
             *g = Some(HookProc { child });
         }
         Err(e) => {
@@ -261,6 +306,10 @@ pub fn boot() {
         .name("hooks-boot".into())
         .spawn(|| {
             crate::util::register_thread("hooks-boot");
+            // The whole boot body runs under LIFECYCLE: a lock that lands
+            // while extraction is still running waits for it, then kills
+            // the freshly spawned pair — never races it.
+            let _life = LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
             let lp = lockscreen_path();
             let sp = shell_path();
             reap_orphan(&lp);
@@ -282,6 +331,7 @@ pub fn boot() {
 /// — has fully finished). The session pair dies first: two hook sets would
 /// double-swallow every key.
 pub fn lock_on() {
+    let _life = LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
     let sp = shell_path();
     kill(&SHELL_PROC, &sp, "shell.exe");
     let lp = lockscreen_path();
@@ -291,6 +341,7 @@ pub fn lock_on() {
 /// The unlock choreography is done (hushtop calls hook_unlock_done after
 /// the sweep + icon fade): the lock pair dies, the session pair returns.
 pub fn lock_off() {
+    let _life = LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
     let lp = lockscreen_path();
     kill(&LOCK_PROC, &lp, "lockscreen.exe");
     let sp = shell_path();
@@ -299,6 +350,7 @@ pub fn lock_off() {
 
 /// Shell shutdown — neither companion outlives the shell that owns it.
 pub fn shutdown() {
+    let _life = LIFECYCLE.lock().unwrap_or_else(|e| e.into_inner());
     let lp = lockscreen_path();
     kill(&LOCK_PROC, &lp, "lockscreen.exe");
     let sp = shell_path();
