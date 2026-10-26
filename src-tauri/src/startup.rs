@@ -4,9 +4,16 @@
 //! folder (the folder `shell:startup` opens) — the one place Windows
 //! launches from at logon without admin rights or registry edits.
 //! Authoring a .lnk by hand means IShellLink COM plumbing; a hidden
-//! PowerShell WScript.Shell call is the pragmatic author, and it only
-//! ever runs on a state change (boot reconcile miss / switch flip),
-//! never on a hot path.
+//! PowerShell WScript.Shell call is the pragmatic author, and it runs only
+//! on a state change (boot reconcile miss / switch flip) or on the
+//! launch-time self-hash check below — never on a hot path.
+//!
+//! THE SELF-HASH LAW: an update that moved or replaced the exe otherwise
+//! leaves a stale shortcut behind — Windows would keep booting the OLD
+//! shell forever while the user runs the new one. So every launch (while
+//! the option is on) SHA-512s the exe the shortcut points at and the exe
+//! running right now; a mismatch — or a target that no longer exists —
+//! re-authors the shortcut in place for the current exe.
 
 use std::os::windows::process::CommandExt;
 use std::path::PathBuf;
@@ -140,5 +147,84 @@ pub fn reconcile(on: bool) {
         }
     } else {
         log("startup: off — nothing to remove");
+    }
+}
+
+/// One hidden PowerShell pass: resolve the shortcut's target path and
+/// SHA-512 both that exe and the one running right now. PowerShell owns
+/// the .lnk parsing (the binary format is a swamp) and the hashing —
+/// stdout is two hex lines, target hash first, "MISSING" when the target
+/// is unset or no longer exists.
+fn hash_pair(lnk: &str, exe: &str) -> Option<(String, String)> {
+    let script = format!(
+        "$ErrorActionPreference='SilentlyContinue';\
+         $s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');\
+         $t=$s.TargetPath;\
+         $h='MISSING';\
+         if($t -and (Test-Path -LiteralPath $t)){{ $h=(Get-FileHash -Algorithm SHA512 -LiteralPath $t).Hash }};\
+         $e=(Get-FileHash -Algorithm SHA512 -LiteralPath '{}').Hash;\
+         $h; $e",
+        ps_quote(lnk),
+        ps_quote(exe),
+    );
+    let out = std::process::Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-WindowStyle",
+            "Hidden",
+            "-Command",
+            &script,
+        ])
+        .creation_flags(CREATE_NO_WINDOW)
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let txt = String::from_utf8_lossy(&out.stdout);
+    let mut lines = txt.lines().map(|l| l.trim()).filter(|l| !l.is_empty());
+    let target = lines.next()?.to_string();
+    let self_hash = lines.next()?.to_string();
+    Some((target, self_hash))
+}
+
+/// Launch-time integrity check (caller gates on the startup option): the
+/// exe the Startup shortcut launches must be byte-identical to the exe
+/// running right now. A moved/renamed/updated app leaves the shortcut
+/// pointing at a stale copy — the mismatch re-authors the shortcut in
+/// place. A missing target hashes as MISSING and lands here too.
+pub fn selfhash_check() {
+    let Some(lnk) = lnk_path() else {
+        return;
+    };
+    if !lnk.exists() {
+        // reconcile(on) just authored it for the current exe — nothing to
+        // compare yet
+        return;
+    }
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let (Some(exe), Some(lnks)) = (exe.to_str(), lnk.to_str()) else {
+        return;
+    };
+    let Some((h_target, h_self)) = hash_pair(lnks, exe) else {
+        log("startup: self-hash check skipped — powershell refused");
+        return;
+    };
+    if h_target == h_self {
+        log("startup: self-hash ok — the shortcut launches this exact exe");
+        return;
+    }
+    log(&format!(
+        "startup: lnk target stale (target {}, self {}) — re-authoring the shortcut",
+        &h_target[..h_target.len().min(12)],
+        &h_self[..h_self.len().min(12)],
+    ));
+    // replace in place: create() early-returns on an existing lnk, so the
+    // stale one goes first
+    if remove() && create() {
+        log("startup: stale shortcut replaced — the Startup entry now launches this exe");
     }
 }

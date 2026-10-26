@@ -8,6 +8,7 @@ mod brightness;
 mod clipboard;
 mod config;
 mod cycle;
+mod cursor;
 mod dnd;
 mod frame;
 mod hooks;
@@ -134,14 +135,20 @@ fn main() {
             startmenu_add_widget,
             lockscreen_lock,
             lockscreen_unlock,
+            boot_reveal_done,
+            lockscreen_hello,
             lock_password_set,
             lock_password_get,
             lock_hotkey_get,
             lock_hotkey_set,
-            lock_burn_get,
-            lock_burn_set,
+            lock_burn_mode_get,
+            lock_burn_mode_set,
             startup_get,
             startup_set,
+            cursor_custom_get,
+            cursor_custom_set,
+            monitor_off,
+            monitor_on,
             preview_overflow,
             wingroup_activate,
             wingroup_hide,
@@ -194,11 +201,20 @@ fn main() {
             }
             // shell:startup reconcile — cfg.startup (default on) is the
             // intent, the Startup folder gets to match. Off-thread: the
-            // PowerShell shortcut author costs a few hundred ms.
+            // PowerShell shortcut author costs a few hundred ms. While the
+            // option is on, the launch-time self-hash follows: the shortcut
+            // must launch byte-identical bytes to the shell running now —
+            // an update that left a stale copy would otherwise boot the old
+            // shell forever.
             {
                 let st = app.state::<AppShared>();
                 let on = crate::util::lock_shared(&st.0).cfg.startup;
-                std::thread::spawn(move || startup::reconcile(on));
+                std::thread::spawn(move || {
+                    startup::reconcile(on);
+                    if on {
+                        startup::selfhash_check();
+                    }
+                });
             }
             // Preview card window (hidden; positioned by the native side).
             let wprev = WebviewWindowBuilder::new(
@@ -529,6 +545,35 @@ fn main() {
             // the embedded pair to the temp dir, spawn the session hooks. All
             // off-thread — the shell's first frame never waits on it.
             hooks::boot();
+            // The shell's own cursor: sleek arrow with a glint motion loop,
+            // spin on every double click. Off-thread like the companions —
+            // the first frame never waits on it. Gated by the cursor_custom
+            // option: off means heal-and-hands-off, stock scheme stays.
+            {
+                let st = app.state::<AppShared>();
+                let on = crate::util::lock_shared(&st.0).cfg.cursor_custom;
+                cursor::boot(on);
+            }
+            // The boot lock: the shell comes up BEHIND the password — every
+            // launch lands on the lockscreen and the desktop answers only to
+            // a verified unlock (with no password set, any input unlocks —
+            // verify() hands an empty hash through). The TIMING belongs to
+            // the choreography, not to a clock: the desktop page fires
+            // boot_reveal_done the moment its reveal sweep FINISHES, and the
+            // lock lands then — every stage of the boot animation completes
+            // before the password takes over, and the lock choreography
+            // starts from the line's resting pose. THIS thread is only the
+            // backstop: if the signal never comes (dead or starved webview),
+            // the shell still locks, well past the slowest honest reveal.
+            {
+                let h = app.handle().clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_millis(
+                        crate::lockscreen::BOOT_FALLBACK_MS,
+                    ));
+                    crate::lockscreen::boot_lock_fallback(&h);
+                });
+            }
             Ok(())
         })
         .run(tauri::generate_context!())
@@ -1122,24 +1167,75 @@ fn lock_hotkey_set(app: tauri::AppHandle, on: bool) {
     ));
 }
 
-/// The lock screen's OLED burn shield (black frame after a minute of
-/// silence). The lockscreen page reads this fresh at every show — the
-/// options view can never be open while locked, so no live push is needed.
+/// Lockscreen burn-in protection mode — "oled" keeps the black-frame
+/// shield, "monitor" powers the display off after a minute of lock-screen
+/// silence (any input wakes it), "none" opts out entirely. The lockscreen
+/// page reads this fresh at every show — the options view can never be
+/// open while locked, so no live push is needed.
 #[tauri::command]
-fn lock_burn_get(app: tauri::AppHandle) -> bool {
+fn lock_burn_mode_get(app: tauri::AppHandle) -> String {
     let st = app.state::<AppShared>();
     let s = crate::util::lock_shared(&st.0);
-    s.cfg.lock_burn
+    s.cfg.lock_burn_mode.clone()
 }
 
-/// The lock screen's OLED burn shield switch (see config.rs).
 #[tauri::command]
-fn lock_burn_set(app: tauri::AppHandle, on: bool) {
+fn lock_burn_mode_set(app: tauri::AppHandle, mode: String) {
+    if !matches!(mode.as_str(), "oled" | "monitor" | "none") {
+        crate::util::log(&format!("config: burn-in protection mode rejected ({mode})"));
+        return;
+    }
     let st = app.state::<AppShared>();
     let mut s = crate::util::lock_shared(&st.0);
-    s.cfg.lock_burn = on;
+    s.cfg.lock_burn_mode = mode.clone();
     s.cfg.save();
-    crate::util::log(&format!("config: lock burn shield switch -> {on}"));
+    crate::util::log(&format!("config: burn-in protection mode -> {mode}"));
+}
+
+/// The shell's own cursor set (config.rs: cursor_custom, default on). Off
+/// means the stock Windows scheme for the whole session; toggling installs
+/// or restores live — cursor::apply runs both legs off the invoke thread.
+#[tauri::command]
+fn cursor_custom_get(app: tauri::AppHandle) -> bool {
+    let st = app.state::<AppShared>();
+    let s = crate::util::lock_shared(&st.0);
+    s.cfg.cursor_custom
+}
+
+#[tauri::command]
+fn cursor_custom_set(app: tauri::AppHandle, on: bool) {
+    {
+        let st = app.state::<AppShared>();
+        let mut s = crate::util::lock_shared(&st.0);
+        s.cfg.cursor_custom = on;
+        s.cfg.save();
+    }
+    cursor::apply(on);
+    crate::util::log(&format!("config: custom cursor switch -> {on}"));
+}
+
+/// Power the display off — lockscreen burn protection, "disable monitor"
+/// mode. The lockscreen page is the only legitimate client, so the command
+/// gates on the one lock truth: a zombie burn timer that outlived its lock
+/// used to power the display down on the OPEN desktop (the hidden page
+/// receives no input, nothing could calm the chain — off every minute).
+/// The backend gate makes that leak impossible regardless of page state:
+/// no lock, no monitor power. monitor_on stays ungated — waking the screen
+/// is always safe and the hide path must never be blocked. Off sleeps every
+/// display until input; on is the defensive wake when the lock screen goes
+/// away (a no-op while the screen is already lit).
+#[tauri::command]
+fn monitor_off(app: tauri::AppHandle) {
+    if !lockscreen::is_locked() {
+        crate::util::log("display: monitor off dropped — shell not locked");
+        return;
+    }
+    brightness::monitor_power(false);
+}
+
+#[tauri::command]
+fn monitor_on() {
+    brightness::monitor_power(true);
 }
 
 #[tauri::command]
@@ -1176,6 +1272,21 @@ fn lock_password_set(app: tauri::AppHandle, password: String) {
 #[tauri::command]
 fn lock_password_get(app: tauri::AppHandle) -> bool {
     lockscreen::password_is_set(&app)
+}
+
+/// The desktop page's boot signal: its reveal sweep finished crossing —
+/// lock NOW (the lock choreography takes the sheet over from the line's
+/// resting pose, nothing is interrupted). See lockscreen::boot_reveal_done.
+#[tauri::command]
+fn boot_reveal_done(app: tauri::AppHandle) {
+    lockscreen::boot_reveal_done(&app);
+}
+
+/// The pages' listener handshake (each page names itself — the hold release
+/// keys on the lockscreen page specifically). See lockscreen::hello.
+#[tauri::command]
+fn lockscreen_hello(app: tauri::AppHandle, page: String) {
+    lockscreen::hello(&app, &page);
 }
 
 /// Shell shutdown from the start menu options view — the same clean exit

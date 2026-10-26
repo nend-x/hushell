@@ -416,3 +416,41 @@ pub fn set(percent: u32) -> usize {
     ));
     n
 }
+
+// ---------------------------------------------------------------------------
+// Display power — the off/on switch the brightness registers never had
+// ---------------------------------------------------------------------------
+
+/// Power the display(s) via the classic SC_MONITORPOWER broadcast — the
+/// same channel Windows itself uses for idle display sleep. lParam 2 = off,
+/// -1 = on. All monitors at once (the broadcast carries no display target)
+/// and any input wakes the screen — both by design: this serves the
+/// lockscreen burn-protection "disable monitor" mode, where waking on the
+/// first keypress or mouse move is exactly the wanted behavior. A value
+/// the brightness slider can never reach: luminance 0 is minimum
+/// brightness, never a panel off.
+pub fn monitor_power(on: bool) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        SendMessageTimeoutW, SMTO_ABORTIFHUNG, WM_SYSCOMMAND,
+    };
+    // HWND_BROADCAST (0xffff), WM_SYSCOMMAND (0x0112), SC_MONITORPOWER
+    // (0xF170). SendMessageTimeoutW so a hung window can never hang the
+    // caller; SMTO_ABORTIFHUNG + 2 s cap.
+    let (lparam, what) = if on { (-1i64, "on") } else { (2i64, "off") };
+    // non-zero LRESULT = at least one recipient processed the message
+    let res = unsafe {
+        SendMessageTimeoutW(
+            windows::Win32::Foundation::HWND(0xffff as _),
+            WM_SYSCOMMAND,
+            windows::Win32::Foundation::WPARAM(0xF170),
+            windows::Win32::Foundation::LPARAM(lparam as isize),
+            SMTO_ABORTIFHUNG,
+            2000,
+            None,
+        )
+    };
+    log(&format!(
+        "display: monitor power {what} (SC_MONITORPOWER broadcast, delivered {})",
+        res.0 != 0
+    ));
+}

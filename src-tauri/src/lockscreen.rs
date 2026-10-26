@@ -20,8 +20,57 @@ static ASSERT_QUEUED: AtomicBool = AtomicBool::new(false);
 
 const FULL_ASSERT_EVERY: u64 = 10;
 
+/// The desktop page fired boot_reveal_done (its reveal sweep FINISHED — the
+/// line is resting at the right edge, the rules fully revealed). The boot
+/// lock fires on this signal, not on a fixed sleep: every stage of the boot
+/// animation completes before the shell goes behind the password. One shot.
+static BOOT_REVEAL_DONE: AtomicBool = AtomicBool::new(false);
+
+/// The lockscreen page has greeted (lockscreen_hello with page =
+/// "lockscreen") — its listeners are registered and its DOM is painted.
+/// The overlay is only ever revealed to a page that can play the entrance;
+/// a hold covers the boot-land window where the page may still be loading.
+static LOCK_HELLO_SEEN: AtomicBool = AtomicBool::new(false);
+
+/// The lock is live but the overlay show is HELD (the lockscreen page has
+/// not greeted yet — showing it now would put an empty transparent window
+/// over the choreography). The hello (or the 1500 ms grace) releases it.
+/// While this is up, main_assert positions the overlay WITHOUT the show
+/// flag — a beat assert can never defeat the hold by accident.
+static LOCK_SHOW_PENDING: AtomicBool = AtomicBool::new(false);
+
+pub const BOOT_FALLBACK_MS: u64 = 6000;
+const SHOW_GRACE_MS: u64 = 1500;
+
 pub fn is_locked() -> bool {
     LOCKED.load(Ordering::SeqCst)
+}
+
+/// The desktop's boot reveal is DONE (the sweep finished crossing). Lock now
+/// — the choreography hands over at the line's resting pose, so the boot
+/// never reads as interrupted. Idempotent: the first call wins, the webview
+/// cannot double-fire, and a call after the fallback already locked is a
+/// quiet no-op.
+pub fn boot_reveal_done(app: &AppHandle) {
+    if is_locked() {
+        return;
+    }
+    if BOOT_REVEAL_DONE.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    log("lockscreen: boot reveal done — the shell locks as the sweep completes");
+    lock(app);
+}
+
+/// The boot thread's backstop: the reveal signal never came (a dead or
+/// starved webview). Lock anyway — the shell must not stay open past the
+/// fallback window, whatever the page did.
+pub fn boot_lock_fallback(app: &AppHandle) {
+    if is_locked() {
+        return;
+    }
+    log("lockscreen: boot lock fallback — no reveal signal, locking anyway");
+    lock(app);
 }
 
 // ---------------------------------------------------------------------------
@@ -142,20 +191,85 @@ pub fn lock(app: &AppHandle) {
     crate::native::bars_slide_down(app);
     let a2 = app.clone();
     let _ = app.run_on_main_thread(move || {
-        // Full geometry assert (places over the virtual screen, TOPMOST,
-        // SWP_SHOWWINDOW) — then the explicit webview show + focus on top
-        // of it (the startmenu convention: the controller must agree the
-        // window is visible, and the password field must own the keyboard).
-        // The window is TRANSPARENT now — hushtop beneath it plays the
-        // icon fade + the ruled-line curtain on the lockscreen:show event.
-        main_assert(&a2);
-        if let Some(w) = a2.get_webview_window("lockscreen") {
-            let _ = w.show();
-            let _ = w.set_focus();
+        // THE HOLD ARMS BEFORE THE ASSERT: main_assert is hold-aware (it
+        // positions the overlay WITHOUT SWP_SHOWWINDOW while a show is
+        // pending), so the pending flag must be up before it runs — the
+        // boot-land path must never reveal the window as a side effect of
+        // its own geometry pass.
+        let greeted = LOCK_HELLO_SEEN.load(Ordering::SeqCst);
+        if !greeted {
+            LOCK_SHOW_PENDING.store(true, Ordering::SeqCst);
         }
-        let _ = a2.emit("lockscreen:show", ());
-        log("lockscreen: locked (overlay on screen, show event emitted)");
+        main_assert(&a2);
+        if greeted {
+            // The lockscreen page already greeted (listeners registered, DOM
+            // painted) — the normal path, every post-boot lock lands here.
+            overlay_show_emit(&a2);
+        } else {
+            // Boot-land race: the lock fired before the lockscreen page ever
+            // greeted. Showing the overlay NOW could put an empty transparent
+            // window over the choreography — hold it. The hello releases the
+            // show the instant the page is ready; a 1500 ms grace backstop
+            // shows it anyway if the page never comes up (degraded but never
+            // stuck — the desktop is already locked and swept).
+            log("lockscreen: locked (overlay held until the lockscreen page greets)");
+            let a3 = a2.clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(SHOW_GRACE_MS));
+                if LOCK_SHOW_PENDING.swap(false, Ordering::SeqCst) {
+                    log("lockscreen: boot land grace elapsed — showing the overlay without a hello");
+                    let a4 = a3.clone();
+                    let _ = a3.run_on_main_thread(move || overlay_show_emit(&a4));
+                }
+            });
+        }
     });
+}
+
+/// The overlay's one true reveal: show, focus, broadcast the show event.
+/// Main thread only (every caller arrives via run_on_main_thread). The
+/// window is already positioned TOPMOST by main_assert — this is the moment
+/// it becomes visible AND the moment the pages hear about the lock, in that
+/// order, so the entrance never plays behind glass.
+fn overlay_show_emit(app: &AppHandle) {
+    LOCK_SHOW_PENDING.store(false, Ordering::SeqCst);
+    if let Some(w) = app.get_webview_window("lockscreen") {
+        let _ = w.show();
+        let _ = w.set_focus();
+    }
+    let _ = app.emit("lockscreen:show", ());
+    log("lockscreen: locked (overlay on screen, show event emitted)");
+}
+
+/// The pages' listener handshake. Each page invokes lockscreen_hello with
+/// its own name once its lock listeners ARE registered (the lockscreen page
+/// also proves its DOM is up — the greeting is sent from script bottom).
+/// Three duties, in order:
+/// 1. RELEASE a held boot-land show — the overlay stayed hidden because this
+///    page was still loading; it is ready now, reveal it.
+/// 2. No hold and no lock: a plain no-op (a normal alt+l lock minutes later
+///    shows the overlay directly from lock()).
+/// 3. Locked and no hold: this page booted (or reloaded) INTO a live lock
+///    and missed the broadcast show — re-emit it TARGETED at the two
+///    choreography pages only, so a broadcast replay can never double-run
+///    anyone else. The pages dedupe a show that lands right behind the real
+///    one (800 ms window).
+pub fn hello(app: &AppHandle, page: &str) {
+    if page == "lockscreen" {
+        LOCK_HELLO_SEEN.store(true, Ordering::SeqCst);
+    }
+    if LOCK_SHOW_PENDING.swap(false, Ordering::SeqCst) {
+        log("lockscreen: hello — the boot land show released");
+        let a2 = app.clone();
+        let _ = app.run_on_main_thread(move || overlay_show_emit(&a2));
+        return;
+    }
+    if !is_locked() {
+        return;
+    }
+    let _ = app.emit_to("lockscreen", "lockscreen:show", ());
+    let _ = app.emit_to("hushtop", "lockscreen:show", ());
+    log("lockscreen: hello — the boot show re-emitted to the pages");
 }
 
 /// The overlay's password check. Wrong password = Err (the webview shakes
@@ -264,6 +378,17 @@ fn main_assert(app: &AppHandle) {
         let ht = GetSystemMetrics(SM_CYVIRTUALSCREEN);
         let fg = GetForegroundWindow().0 as isize;
         let needs_focus = fg != hl;
+        // THE HOLD: while the boot-land show is pending (the lockscreen page
+        // has not greeted yet) this assert positions the overlay but never
+        // reveals it — SWP_SHOWWINDOW would pop an empty transparent window
+        // over the choreography, and the periodic beat asserts would defeat
+        // the hold within 100 ms. The show happens exactly once, in
+        // overlay_show_emit, when the hello (or the grace) releases it.
+        let show_flags = if LOCK_SHOW_PENDING.load(Ordering::SeqCst) {
+            SWP_NOACTIVATE
+        } else {
+            SWP_SHOWWINDOW | SWP_NOACTIVATE
+        };
         let _ = SetWindowPos(
             h,
             HWND_TOPMOST,
@@ -271,9 +396,9 @@ fn main_assert(app: &AppHandle) {
             y,
             w,
             ht,
-            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            show_flags,
         );
-        if needs_focus {
+        if needs_focus && !LOCK_SHOW_PENDING.load(Ordering::SeqCst) {
             if let Some(win) = app.get_webview_window("lockscreen") {
                 let _ = win.set_focus();
             }

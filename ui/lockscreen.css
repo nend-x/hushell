@@ -143,6 +143,19 @@ body {
   80% { transform: translateX(3px); }
 }
 
+/* the no-password warning — a quiet amber line under the password hairline;
+   it rides the same ink stack as everything else (fades in/out with #lock) */
+#pw-warn {
+  margin-top: 14px;
+  font-size: 12px;
+  font-weight: 400;
+  letter-spacing: 0.6px;
+  color: #d89a5e;
+}
+#pw-warn[hidden] {
+  display: none;
+}
+
 #lock-brand {
   position: absolute;
   bottom: 26px;

@@ -2390,21 +2390,28 @@ const SWEEP_EASE = "cubic-bezier(0.65, 0, 0.35, 1)";
 
 let sweepAnims = [];
 
-function sweepDesk(dir) {
+function sweepDesk(dir, holdLine) {
+  // CONTINUITY: read the line's and the rules' CURRENT animated state
+  // BEFORE canceling anything. A cancel snaps both back to their underlying
+  // values, and animating from those snapped values is exactly the jump the
+  // owner saw (a lock landing mid-boot-sweep teleported the line to the far
+  // edge before the retrace). From = wherever the motion actually is right
+  // now; the at-rest fallbacks reproduce the old endpoints when nothing is
+  // in flight (the line is display:none -> computed left "auto").
+  const lineNow = getComputedStyle(wipeLineEl).left;
+  const clipNow = getComputedStyle(rulesEl).clipPath;
   for (const a of sweepAnims) a.cancel();
   sweepAnims = [];
   // the line may still carry a space-switch animation (a lock pressed
   // mid-wipe) — take the element over completely
   for (const a of wipeLineEl.getAnimations()) a.cancel();
-  // from = whatever the rules layer is clipped to right now (mid-boot
-  // reveal, erased after a lock, or the bare boot start) — the transition
-  // always starts from the true visible state, never snaps.
-  let fromClip = getComputedStyle(rulesEl).clipPath;
+  let fromClip = clipNow;
   if (fromClip === "none") {
     fromClip = dir < 0 ? "inset(0 0% 0 0)" : "inset(0 100% 0 0)";
   }
   const toClip = dir < 0 ? "inset(0 100% 0 0)" : "inset(0 0% 0 0)";
-  const fromLeft = dir < 0 ? "100%" : "0%";
+  const atRest = lineNow === "auto" || lineNow === "";
+  const fromLeft = atRest ? (dir < 0 ? "100%" : "0%") : lineNow;
   const toLeft = dir < 0 ? "0%" : "100%";
   wipeLineEl.classList.add("on");
   const opts = { duration: SWEEP_MS, easing: SWEEP_EASE, fill: "forwards" };
@@ -2419,9 +2426,21 @@ function sweepDesk(dir) {
   sweepAnims = [lineAnim, clipAnim];
   clipAnim.onfinish = () => {
     rulesEl.style.clipPath = toClip; // the resting state, held without fill
-    for (const a of sweepAnims) a.cancel();
+    clipAnim.cancel();
     sweepAnims = [];
-    wipeLineEl.classList.remove("on");
+    if (holdLine) {
+      // The boot sweep HOLDS the line parked at its far edge on a live
+      // fill: the lock's erase retrace takes it over from exactly where the
+      // reveal stopped — one continuous line from the first frame of the
+      // boot to the bare locked sheet. The line animation is deliberately
+      // left running (canceling it would snap the line to its static
+      // left-edge position while still visible); it stays registered so the
+      // next sweepDesk finds and takes it over.
+      sweepAnims = [lineAnim];
+    } else {
+      lineAnim.cancel();
+      wipeLineEl.classList.remove("on");
+    }
   };
   return clipAnim;
 }
@@ -2429,7 +2448,12 @@ function sweepDesk(dir) {
 // Boot: the shell starts on an opaque paper-dark veil (the CSS default for
 // #veil — never light ink), a bare sheet with no rules. The reveal stages:
 // the veil lifts, the single line sweeps left -> right and the ruled lines
-// slide back in behind it, icons and widgets fade in last. Slow on purpose.
+// slide back in behind it. There is no third stage on the schedule — the
+// sweep IS the loading, and what follows it is THE LOCK: the shell launches
+// straight to the lockscreen, so the reveal finishes first (the line holds
+// its far edge) and the boot lock lands the moment the crossing is done.
+// The icons'/widgets' first bloom belongs to the UNLOCK choreography, never
+// to a flash that the lock would immediately erase.
 let bootPlayed = false;
 function playBoot() {
   if (bootPlayed) return;
@@ -2439,18 +2463,40 @@ function playBoot() {
     ulog("choreo: boot — background fades in");
   }, 400);
   setTimeout(() => {
-    sweepDesk(1);
+    // holdLine: the line parks at the right edge instead of vanishing —
+    // the lock's erase retrace starts exactly there. The signal fires on
+    // the ANIMATION's finish (never a timer): the backend locks as the
+    // sweep completes, so no stage of the boot is ever cut short.
+    const reveal = sweepDesk(1, true);
+    reveal.addEventListener("finish", () => {
+      invoke("boot_reveal_done").catch(() => {});
+      // The desktop bloom (icons/widgets/effect) is gated on the lock NOT
+      // having landed: the show event beats this timer by more than a
+      // second when the signal works (the sheet stays bare for the lock
+      // choreography; body.unlocking replays the bloom after the
+      // password). Only a lost signal — the backend's fallback owns the
+      // lock from here — lets the desktop bloom while still open.
+      setTimeout(() => {
+        // the lock landed on schedule (the honest boot) OR an unlock is
+        // already playing (a no-password keydown slipped in within the
+        // grace beat) — either way the bloom is owned elsewhere
+        if (
+          document.body.classList.contains("locked") ||
+          document.body.classList.contains("unlocking")
+        ) {
+          return;
+        }
+        document.body.classList.add("boot-icons");
+        // the boot reveal is done enough for the sky: the gate lifts here and the
+        // particles FADE IN with the icons/widgets — they are part of the reveal,
+        // never the skeleton (they did not run during the veil/sweep stages)
+        fxBooting = false;
+        fxSet(fxUserKind);
+        ulog("choreo: boot — icons and widgets fade in, desktop effect fades in with them");
+      }, 1500);
+    });
     ulog("choreo: boot — the line sweeps left -> right, ruled lines slide in");
   }, 1200);
-  setTimeout(() => {
-    document.body.classList.add("boot-icons");
-    // the boot reveal is done enough for the sky: the gate lifts here and the
-    // particles FADE IN with the icons/widgets — they are part of the reveal,
-    // never the skeleton (they did not run during the veil/sweep stages)
-    fxBooting = false;
-    fxSet(fxUserKind);
-    ulog("choreo: boot — icons and widgets fade in, desktop effect fades in with them");
-  }, 2750);
 }
 
 // The body carries .boot from script start (before the first paint) so the
@@ -2482,8 +2528,16 @@ document.body.classList.add("boot");
 // finish step clears it.
 const WIND_FADE_MS = 700;
 let unlockSeq = 0;
+// The lock choreography dedupe: the lockscreen_hello re-emit can land right
+// behind a show this page did catch (the boot lock races webview boot) —
+// replaying the lock fade/sweep twice reads as a glitch. 800ms covers every
+// honest ordering; a re-lock minutes later passes freely.
+let lastLockShowAt = 0;
 
-listen("lockscreen:show", () => {
+const lockShowReady = listen("lockscreen:show", () => {
+  const now = Date.now();
+  if (now - lastLockShowAt < 800) return;
+  lastLockShowAt = now;
   bootPlayed = true; // a lock supersedes an incomplete boot
   fxBooting = false; // the gate must never outlive the boot — unlock replays the pick
   unlockSeq++; // a re-lock kills any unlock choreography still in flight
@@ -2508,7 +2562,7 @@ listen("lockscreen:show", () => {
   ulog("choreo: lock — icons fade out, then the line erases the rules right -> left");
 }).catch(() => {});
 
-listen("lockscreen:hide", () => {
+const lockHideReady = listen("lockscreen:hide", () => {
   const seq = ++unlockSeq;
   clearTimeout(fxFadeTimer); // a pending lock-time freeze loses to the unlock
   ulog("choreo: unlock — holding the wash until the wind farm has melted out");
@@ -2553,3 +2607,13 @@ listen("lockscreen:gone", () => {
   fxRestore();
   ulog("choreo: unlock — overlay gone, desktop effect re-asserted (" + fxUserKind + ")");
 }).catch(() => {});
+
+// Listener handshake (same shape as the lock page's): once the lock
+// listeners are registered, tell the backend. If the shell booted straight
+// into the lock while THIS webview was still loading, the broadcast show was
+// missed and the backend re-emits it to both pages — the dedupe above eats
+// the echo when the real show was caught. A normal alt+l lock gets a no-op
+// hello: nothing to heal.
+Promise.all([lockShowReady, lockHideReady])
+  .catch(() => {})
+  .then(() => invoke("lockscreen_hello", { page: "hushtop" }).catch(() => {}));

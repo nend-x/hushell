@@ -1594,6 +1594,11 @@ unsafe extern "system" fn host_proc(
                 // (and a lock pair from a lock that was up at exit) dies
                 // BEFORE the teardown, so no hook outlives its owner.
                 crate::hooks::shutdown();
+                // The cursor goes back to the user's own before the shell
+                // dies — and before a Start Fresh relaunch inherits the
+                // session (the fresh boot re-heals anyway; exact restore
+                // here keeps the two shells' cursors from ever overlapping).
+                crate::cursor::shutdown();
                 let st = app.state::<crate::AppShared>();
                 let mut s = st.0.lock().unwrap_or_else(|e| e.into_inner());
                 appbar_unregister(&mut s);
@@ -1637,10 +1642,25 @@ unsafe extern "system" fn host_proc(
             // A monitor joined, left, or changed resolution. Without this
             // the secondary bars kept their stale monitor rects (bars and
             // reservations misplaced until restart) and hushtop kept the
-            // old virtual-screen size.
+            // old virtual-screen size. A mode switch can also reload the
+            // cursor scheme over our swap — re-arm the set alongside.
+            crate::cursor::rearm();
             if let Some(app) = APP_HANDLE.get() {
                 unsafe { display_change(app) };
             }
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_SETTINGCHANGE => {
+            // Anything that reloaded the system cursor scheme over us (a
+            // theme change, a driver reset, a SPI_SETCURSORS from any app)
+            // lands here. The cursor module debounces and no-ops when idle
+            // — a cheap, lock-free heal of the one thing round 2 lacked.
+            crate::cursor::rearm();
+            LRESULT(0)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_THEMECHANGED => {
+            // Theme engines reload cursor schemes on transitions.
+            crate::cursor::rearm();
             LRESULT(0)
         }
         crate::clipboard::WM_CLIPBOARDUPDATE => {

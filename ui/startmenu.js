@@ -230,6 +230,8 @@ function syncLockPassword() {
   invoke("lock_password_get")
     .then((set) => {
       lockpwState.textContent = set ? "set" : "not set";
+      // the "no password is set" warning lives on the LOCKSCREEN, under the
+      // field it describes — options carries only this state note
     })
     .catch(() => {});
 }
@@ -256,7 +258,8 @@ lockpwInput.addEventListener("keydown", (e) => {
 function syncOptions() {
   syncLockPassword();
   syncLockHotkey();
-  syncLockBurn();
+  syncLockBurnMode();
+  syncCursorCustom();
   syncStartup();
 }
 
@@ -282,28 +285,49 @@ swLockHotkey.addEventListener("click", () => {
   invoke("lock_hotkey_set", { on: lockHotkeyOn }).catch(() => {});
 });
 
-// ---------- lock-screen burn shield switch (OLED protection) -------------
+// ---------- lockscreen burn-in protection mode (dropdown) ----------------
+// "oled" keeps the black-frame shield, "disable monitor" powers the display
+// off after a minute of lock-screen silence till input, "none" opts out.
 
-const swLockBurn = document.getElementById("sw-lockburn");
-const lockBurnState = document.getElementById("lockburn-state");
-let lockBurnOn = true;
+const selBurnMode = document.getElementById("sel-burnmode");
+const BURN_MODES = ["oled", "monitor", "none"];
 
-function syncLockBurn() {
-  invoke("lock_burn_get")
-    .then((on) => {
-      lockBurnOn = !!on;
-      swLockBurn.classList.toggle("on", lockBurnOn);
-      lockBurnState.textContent = lockBurnOn ? "lock screen · 1 min idle" : "off";
+function syncLockBurnMode() {
+  invoke("lock_burn_mode_get")
+    .then((mode) => {
+      selBurnMode.value = BURN_MODES.includes(mode) ? mode : "oled";
     })
     .catch(() => {});
 }
 
-swLockBurn.addEventListener("click", () => {
-  lockBurnOn = !lockBurnOn;
+selBurnMode.addEventListener("change", () => {
+  // the value is pre-validated by the <select> itself — only the three
+  // options above exist
+  invoke("lock_burn_mode_set", { mode: selBurnMode.value }).catch(() => {});
+});
+
+// ---------- custom cursor switch (the shell's own cursor set) ------------
+
+const swCursorCust = document.getElementById("sw-cursorcust");
+const cursorCustState = document.getElementById("cursorcust-state");
+let cursorCustOn = true;
+
+function syncCursorCustom() {
+  invoke("cursor_custom_get")
+    .then((on) => {
+      cursorCustOn = !!on;
+      swCursorCust.classList.toggle("on", cursorCustOn);
+      cursorCustState.textContent = cursorCustOn ? "on" : "off";
+    })
+    .catch(() => {});
+}
+
+swCursorCust.addEventListener("click", () => {
+  cursorCustOn = !cursorCustOn;
   // instant local flip — the page never waits for the round trip
-  swLockBurn.classList.toggle("on", lockBurnOn);
-  lockBurnState.textContent = lockBurnOn ? "lock screen · 1 min idle" : "off";
-  invoke("lock_burn_set", { on: lockBurnOn }).catch(() => {});
+  swCursorCust.classList.toggle("on", cursorCustOn);
+  cursorCustState.textContent = cursorCustOn ? "on" : "off";
+  invoke("cursor_custom_set", { on: cursorCustOn }).catch(() => {});
 });
 
 // ---------- startup switch (shell:startup self-registration) ----------

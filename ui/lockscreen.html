@@ -44,6 +44,11 @@
       <input id="password" type="password" placeholder="password" spellcheck="false" autocomplete="off" />
     </form>
 
+    <!-- the no-password warning: lives HERE, under the field it describes —
+         the user is looking at the lock when it matters (options already
+         carries the plain "not set" state note) -->
+    <div id="pw-warn" hidden>no password is set, please set it in settings</div>
+
     <footer id="lock-brand">hushell</footer>
   </div>
   <script src="theme.js"></script>

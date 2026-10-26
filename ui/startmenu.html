@@ -44,7 +44,7 @@
           <button class="box" id="box-options">
             <span class="glyph glyph-options"><i></i><i></i><i></i></span>
             <span class="box-name">Options</span>
-            <span class="box-sub">widgets &middot; shell</span>
+            <span class="box-sub">shell</span>
           </button>
           <button class="box" id="box-widgets">
             <span class="glyph glyph-widgets"><i></i><i></i><i></i><i></i></span>
@@ -96,9 +96,18 @@
           </div>
           <div class="sep"></div>
           <div class="row">
-            <span class="row-label">Burn-in protection</span>
-            <span class="row-note" id="lockburn-state">lock screen &middot; 1 min idle</span>
-            <button class="switch" id="sw-lockburn" aria-label="Toggle the lock screen burn-in shield"><i></i></button>
+            <span class="row-label">Lockscreen burn-in protection mode</span>
+            <select class="row-select" id="sel-burnmode" aria-label="Lockscreen burn-in protection mode">
+              <option value="oled">oled</option>
+              <option value="monitor">disable monitor</option>
+              <option value="none">none</option>
+            </select>
+          </div>
+          <div class="sep"></div>
+          <div class="row">
+            <span class="row-label">Custom cursor</span>
+            <span class="row-note" id="cursorcust-state">on</span>
+            <button class="switch" id="sw-cursorcust" aria-label="Toggle the shell's custom cursor set"><i></i></button>
           </div>
           <div class="sep"></div>
           <div class="row">

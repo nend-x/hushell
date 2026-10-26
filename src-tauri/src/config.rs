@@ -111,11 +111,20 @@ pub struct Config {
     pub lock_hash: String,
     #[serde(default = "default_true")]
     pub lock_hotkey: bool,
-    /// The lock screen's OLED burn shield (full-black frame after a minute
-    /// of lock-screen silence; keyboard wakes, mouse does not). The options
-    /// switch turns it off entirely.
+    /// Lockscreen burn-in protection mode — what happens after a minute of
+    /// lock-screen silence:
+    ///   "oled"   — the black-frame shield fades in (keyboard wakes it,
+    ///              the mouse deliberately does not);
+    ///   "monitor" — the display itself is powered off (SC_MONITORPOWER
+    ///              broadcast) and sleeps until any input wakes it;
+    ///   "none"   — protection off entirely.
+    #[serde(default = "default_burn_mode")]
+    pub lock_burn_mode: String,
+    /// The shell's own cursor set (circle / square / text line / spinning
+    /// triangle). Off keeps the stock Windows scheme for the whole session;
+    /// toggling installs and restores live.
     #[serde(default = "default_true")]
-    pub lock_burn: bool,
+    pub cursor_custom: bool,
     /// Run at startup — the shell drops a .lnk for itself into the user's
     /// Startup folder (shell:startup) when on, removes it when off.
     #[serde(default = "default_true")]
@@ -124,6 +133,10 @@ pub struct Config {
 
 fn default_true() -> bool {
     true
+}
+
+fn default_burn_mode() -> String {
+    "oled".to_string()
 }
 
 fn default_spaces() -> [Space; 2] {
@@ -145,7 +158,8 @@ impl Default for Config {
             lock_salt: String::new(),
             lock_hash: String::new(),
             lock_hotkey: true,
-            lock_burn: true,
+            lock_burn_mode: "oled".to_string(),
+            cursor_custom: true,
             startup: true,
         }
     }
@@ -292,6 +306,12 @@ impl Config {
             // config over a retired string. Same for "wind": the farm moved
             // to the lock screen, a stale stored value renders as none.
             "" | "none" | "snow" | "leaves" | "star" | "wind" | "rain"
+        );
+        ok &= matches!(
+            self.lock_burn_mode.as_str(),
+            // a hand-edited or stale mode never limps along — the whole
+            // config resets, same law as every other invalid record
+            "oled" | "monitor" | "none"
         );
         ok
     }
