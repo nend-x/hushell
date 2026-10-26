@@ -1565,10 +1565,6 @@ pub fn cmd_open(_app: &AppHandle, name: String) -> Result<(), String> {
     Ok(())
 }
 
-pub unsafe fn cmd_delete(app: &AppHandle, name: String) -> Result<(), String> {
-    cmd_delete_many(app, vec![name])
-}
-
 /// Recycle-bin delete of one or more desktop items — ONE SHFileOperationW
 /// for the whole list (a bulk delete is one motion, not a wizard), then a
 /// single rescan. Every space forgets the names.

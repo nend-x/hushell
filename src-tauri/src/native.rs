@@ -1590,10 +1590,6 @@ unsafe extern "system" fn host_proc(
         }
         WM_APP_EXIT => {
             if let Some(app) = APP_HANDLE.get() {
-                // The AHK companions are ours to the end: the session pair
-                // (and a lock pair from a lock that was up at exit) dies
-                // BEFORE the teardown, so no hook outlives its owner.
-                crate::hooks::shutdown();
                 // The cursor goes back to the user's own before the shell
                 // dies — and before a Start Fresh relaunch inherits the
                 // session (the fresh boot re-heals anyway; exact restore
@@ -1610,11 +1606,8 @@ unsafe extern "system" fn host_proc(
                     // Start Fresh: the teardown is done (taskbar back, icons
                     // back). Every saved byte goes NOW — after all teardown
                     // save paths have run (they were muted by the FRESH_WIPE
-                    // arm; this catches anything written before it) — and
-                    // the extracted hook companions go with them: the fresh
-                    // boot re-extracts from the bytes this build embeds.
+                    // arm; this catches anything written before it).
                     crate::config::wipe_all();
-                    crate::hooks::wipe_cached();
                     // only NOW spawn the clean replacement, so the two
                     // shells never overlap.
                     fresh_relaunch();

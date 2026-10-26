@@ -25,11 +25,9 @@
   --dot-active: #171717;
   --thumb-slot: #e9e7e1;
   --err: #b3261e;
-  --err-soft: rgba(179, 38, 30, 0.07);
   --spring: cubic-bezier(0.34, 1.56, 0.64, 1);
   --ease: cubic-bezier(0.22, 1, 0.36, 1);
   --fast: 160ms;
-  --med: 240ms;
 }
 
 :root[data-theme="dark"] {
@@ -46,7 +44,6 @@
   --dot-active: #eceade;
   --thumb-slot: #1c1c1f;
   --err: #ff6f61;
-  --err-soft: rgba(255, 111, 97, 0.1);
 }
 
 * { margin: 0; padding: 0; box-sizing: border-box; }
