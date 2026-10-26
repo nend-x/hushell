@@ -2583,13 +2583,6 @@ const lockHideReady = listen("lockscreen:hide", () => {
       fxSuspended = false;
       fxRestore();
       ulog("choreo: unlock — desktop effect restored (" + fxUserKind + ")");
-      // the fade runs 900ms — when it lands the UNLOCKING choreography is
-      // fully finished and the lock's AHK hooks hand back to the session
-      // pair (stale by construction: the seq check above gates re-locks)
-      setTimeout(() => {
-        if (seq !== unlockSeq) return;
-        invoke("hook_unlock_done").catch(() => {});
-      }, 900);
     }, SWEEP_MS);
   }, WIND_FADE_MS);
 }).catch(() => {});

@@ -11,7 +11,6 @@ mod cycle;
 mod cursor;
 mod dnd;
 mod frame;
-mod hooks;
 mod icons;
 mod hushtop;
 mod lang;
@@ -84,7 +83,6 @@ fn main() {
             hushtop_move_space,
             hushtop_menu,
             hushtop_open,
-            hushtop_delete,
             hushtop_rename,
             hushtop_create,
             hushtop_refresh,
@@ -93,14 +91,11 @@ fn main() {
             hushtop_prompt_state,
             hushtop_notepad_save,
             hushtop_notepad_del,
-            hushtop_notepad_list,
             hushtop_widget_del,
             hushtop_widget_save,
-            hushtop_widget_add,
             hushtop_delete_many,
             hushtop_sort,
             hushtop_space_set,
-            hushtop_effect_get,
             hushtop_effect_set,
             widget_drag_move,
             widget_drag_drop,
@@ -108,10 +103,8 @@ fn main() {
             brightness_get,
             brightness_set,
             hushtop_ui_log,
-            audio_master_get,
             audio_master_set,
             audio_master_step,
-            audio_mute_get,
             audio_mute_set,
             audio_state,
             audio_sessions,
@@ -128,11 +121,9 @@ fn main() {
             startmenu_ui_error,
             startmenu_search,
             startmenu_open,
-            startmenu_pinned_view,
             startmenu_pin,
             startmenu_unpin,
             startmenu_is_pinned,
-            startmenu_add_widget,
             lockscreen_lock,
             lockscreen_unlock,
             boot_reveal_done,
@@ -161,8 +152,6 @@ fn main() {
             system_shutdown,
             shell_fresh_start,
             shell_shutdown,
-            hook_lock_on,
-            hook_unlock_done
         ])
         // EVERY hushell window is unclosable: the bar used to die to
         // Alt+F4, and a shell that can be dismantled window-by-window is
@@ -541,13 +530,9 @@ fn main() {
             startmenu_killer::start();
 
             media::start(app.handle().clone());
-            // The AHK hook companions: reap crashed-session leftovers, extract
-            // the embedded pair to the temp dir, spawn the session hooks. All
-            // off-thread — the shell's first frame never waits on it.
-            hooks::boot();
             // The shell's own cursor: sleek arrow with a glint motion loop,
-            // spin on every double click. Off-thread like the companions —
-            // the first frame never waits on it. Gated by the cursor_custom
+            // spin on every double click. Off-thread — the first frame never
+            // waits on it. Gated by the cursor_custom
             // option: off means heal-and-hands-off, stock scheme stays.
             {
                 let st = app.state::<AppShared>();
@@ -786,11 +771,6 @@ fn hushtop_open(app: tauri::AppHandle, name: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn hushtop_delete(app: tauri::AppHandle, name: String) -> Result<(), String> {
-    unsafe { hushtop::cmd_delete(&app, name) }
-}
-
-#[tauri::command]
 fn hushtop_rename(app: tauri::AppHandle, old: String, new: String) -> Result<(), String> {
     unsafe { hushtop::cmd_rename(&app, old, new) }
 }
@@ -902,22 +882,6 @@ fn hushtop_widget_save(
     hushtop::widget_save_pos(&app, id, col, row, w, h)
 }
 
-/// Drag-out drop from the start menu's widget gallery.
-#[tauri::command]
-fn hushtop_widget_add(
-    app: tauri::AppHandle,
-    kind: String,
-    col: i32,
-    row: i32,
-    space: usize,
-) -> Result<u32, String> {
-    if kind == "notes" {
-        hushtop::notepad_add(&app, col, row, space)
-    } else {
-        hushtop::widget_add(&app, &kind, col, row, space)
-    }
-}
-
 #[tauri::command]
 fn hushtop_delete_many(app: tauri::AppHandle, names: Vec<String>) -> Result<(), String> {
     unsafe { hushtop::cmd_delete_many(&app, names) }
@@ -933,13 +897,6 @@ fn hushtop_sort(app: tauri::AppHandle, space: usize, mode: String) -> Result<(),
 #[tauri::command]
 fn hushtop_space_set(app: tauri::AppHandle, idx: usize) -> Result<(), String> {
     hushtop::space_set(&app, idx)
-}
-
-#[tauri::command]
-fn hushtop_effect_get(app: tauri::AppHandle) -> String {
-    let st = app.state::<AppShared>();
-    let s = crate::util::lock_shared(&st.0);
-    s.cfg.effect.clone()
 }
 
 /// The effects widget picked a desktop particle layer.
@@ -985,19 +942,6 @@ fn hushtop_ui_log(line: String) {
     crate::util::log(&format!("ui: {line}"));
 }
 
-#[tauri::command]
-fn hushtop_notepad_list(app: tauri::AppHandle) -> Vec<config::Notepad> {
-    let st = app.state::<AppShared>();
-    let s = crate::util::lock_shared(&st.0);
-    let a = s.cfg.active_space.min(1);
-    s.cfg.spaces[a].notepads.clone()
-}
-
-#[tauri::command]
-fn audio_master_get() -> Result<f32, String> {
-    audio::master_get()
-}
-
 /// One broadcast after every master-volume mutation (slider set, media-key
 /// step, mute flip): the volume widget on the desktop and the volume flyout
 /// on the bar both repaint from the SAME event — no more 2s poll lag and
@@ -1020,11 +964,6 @@ fn audio_master_step(app: tauri::AppHandle, delta: f32) -> Result<f32, String> {
     let v = audio::master_step(delta)?;
     announce_audio(&app);
     Ok(v)
-}
-
-#[tauri::command]
-fn audio_mute_get() -> Result<bool, String> {
-    audio::mute_get()
 }
 
 #[tauri::command]
@@ -1114,14 +1053,6 @@ fn startmenu_open(app: tauri::AppHandle, target: String) -> Result<(), String> {
 }
 
 #[tauri::command]
-async fn startmenu_pinned_view(app: tauri::AppHandle) -> Vec<startmenu::PinDto> {
-    let a2 = app.clone();
-    tauri::async_runtime::spawn_blocking(move || startmenu::pinned_view(&a2))
-        .await
-        .unwrap_or_default()
-}
-
-#[tauri::command]
 fn startmenu_pin(app: tauri::AppHandle, target: String) {
     startmenu::pin(&app, &target);
 }
@@ -1134,11 +1065,6 @@ fn startmenu_unpin(app: tauri::AppHandle, target: String) {
 #[tauri::command]
 fn startmenu_is_pinned(app: tauri::AppHandle, name: String) -> bool {
     startmenu::is_pinned(&app, &name)
-}
-
-#[tauri::command]
-fn startmenu_add_widget(app: tauri::AppHandle, kind: String) -> Result<u32, String> {
-    startmenu::add_widget(&app, &kind)
 }
 
 #[tauri::command]
@@ -1299,8 +1225,7 @@ fn shell_shutdown(app: tauri::AppHandle) {
 
 /// Start fresh — remove EVERY saved byte and relaunch from a clean sheet.
 /// The whole %APPDATA%\hushell data dir goes (config.json — settings,
-/// clipboard history, pinned apps, lock hash — plus the session log); the
-/// extracted hook companions in %TEMP% follow at exit (hooks::wipe_cached).
+/// clipboard history, pinned apps, lock hash — plus the session log).
 /// Arming FRESH_WIPE comes FIRST: from that moment every Config::save() is
 /// a no-op, so no teardown step (restore_native, hushtop::restore, DnD,
 /// clipboard, watchers) can write the settings back behind the wipe — that
@@ -1344,26 +1269,6 @@ fn lyrics_fetch(
     Ok(lyrics::fetch(
         &app, &title, &artist, &album, duration,
     ))
-}
-
-/// The lock page reports the LOCKING choreography fully finished (its wind
-/// farm has faded in) — the lock hooks take over and the session hooks die.
-#[tauri::command]
-fn hook_lock_on() {
-    if !lockscreen::is_locked() {
-        return; // stale report — the lock is already gone
-    }
-    hooks::lock_on();
-}
-
-/// hushtop reports the UNLOCKING choreography fully finished (sweep + icon
-/// fade played out) — the lock hooks die and the session hooks return.
-#[tauri::command]
-fn hook_unlock_done() {
-    if lockscreen::is_locked() {
-        return; // a re-lock landed — the lock hooks must stay
-    }
-    hooks::lock_off();
 }
 
 /// Enable SeShutdownPrivilege on the current process token.

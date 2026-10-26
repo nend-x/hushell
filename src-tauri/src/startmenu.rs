@@ -366,14 +366,6 @@ pub struct Hit {
     pub icon: Option<String>,
 }
 
-#[derive(Serialize, Clone)]
-pub struct PinDto {
-    pub name: String,
-    pub target: String,
-    pub user_pin: bool,
-    pub icon: Option<String>,
-}
-
 #[derive(Clone)]
 struct IndexEntry {
     display: String,
@@ -741,7 +733,6 @@ pub fn pin(app: &AppHandle, target: &str) {
         s.cfg.save();
         log(&format!("startmenu: pinned '{target}'"));
     }
-    let _ = app.emit("startmenu:pins", pinned_names(app));
 }
 
 pub fn unpin(app: &AppHandle, target: &str) {
@@ -756,7 +747,6 @@ pub fn unpin(app: &AppHandle, target: &str) {
         s.cfg.save();
         log(&format!("startmenu: unpinned '{target}'"));
     }
-    let _ = app.emit("startmenu:pins", pinned_names(app));
 }
 
 /// The raw pin list (bare names + absolute paths). The hushtop icon context
@@ -771,90 +761,6 @@ pub fn is_pinned(app: &AppHandle, target: &str) -> bool {
     pinned_names(app).iter().any(|p| p == target)
 }
 
-pub fn pinned_view(app: &AppHandle) -> Vec<PinDto> {
-    let theme = "dark".to_string(); // dark-only shell; icon cache key
-    let mut out: Vec<PinDto> = Vec::new();
-    let mut seen_names: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for t in read_pins_cfg(app) {
-        let target = t.clone();
-        let (path, name) = if !t.contains('\\') && !t.contains('/') {
-            match crate::hushtop::item_path(&t) {
-                Ok(p) => (p, display_of(&t)),
-                Err(_) => continue, // dangling desktop pin — hide, keep
-            }
-        } else {
-            let p = PathBuf::from(&t);
-            if !p.exists() {
-                continue;
-            }
-            let name = p
-                .file_name()
-                .and_then(|s| s.to_str())
-                .map(display_of)
-                .unwrap_or_else(|| t.clone());
-            (p, name)
-        };
-        if !seen_names.insert(name.to_lowercase()) {
-            continue; // a later app-grid copy of the same name is a duplicate
-        }
-        let icon = icon_for_target_cached(&path.to_string_lossy(), &theme);
-        out.push(PinDto {
-            name,
-            target,
-            user_pin: true,
-            icon,
-        });
-    }
-    let idx = ensure_index();
-    let mut apps: Vec<&IndexEntry> = idx.iter().filter(|e| e.kind == "app").collect();
-    apps.sort_by(|a, b| a.display.to_lowercase().cmp(&b.display.to_lowercase()));
-    for e in apps.into_iter().take(150) {
-        if !seen_names.insert(e.lower.clone()) {
-            continue;
-        }
-        out.push(PinDto {
-            name: e.display.clone(),
-            target: e.path.clone(),
-            user_pin: false,
-            icon: icon_for_target_cached(&e.path, &theme),
-        });
-    }
-    out
-}
-
-fn read_pins_cfg(app: &AppHandle) -> Vec<String> {
-    let st = app.state::<crate::AppShared>();
-    let s = crate::util::lock_shared(&st.0);
-    s.cfg.pinned.clone()
-}
-
 // ---------------------------------------------------------------------------
 // Controls view backend
 // ---------------------------------------------------------------------------
-
-/// Auto-place: a count-based cascade down the paper, in GRID CELLS —
-/// columns cycle 2..6, one row further down per existing card. Cells, not
-/// pixels: the webview derives the position at render time, so the spawn
-/// spot is stable no matter the monitor or DPI. Counts the TARGET space.
-fn auto_widget_pos(app: &AppHandle, space: usize) -> (i32, i32) {
-    let st = app.state::<crate::AppShared>();
-    let s = crate::util::lock_shared(&st.0);
-    let sp = &s.cfg.spaces[space.min(1)];
-    let n = sp.notepads.len() + sp.widgets.len();
-    (2 + (n % 5) as i32, 4 + n as i32)
-}
-
-pub fn add_widget(app: &AppHandle, kind: &str) -> Result<u32, String> {
-    let a = {
-        let st = app.state::<crate::AppShared>();
-        let s = crate::util::lock_shared(&st.0);
-        s.cfg.active_space.min(1)
-    };
-    let (col, row) = auto_widget_pos(app, a);
-    match kind {
-        "notes" => crate::hushtop::notepad_add(app, col, row, a),
-        "volume" | "clipboard" | "stats" | "lock" | "media" | "lyrics" | "spaces"
-        | "brightness" | "effects" => crate::hushtop::widget_add(app, kind, col, row, a),
-        other => Err(format!("unknown widget kind '{other}'")),
-    }
-}

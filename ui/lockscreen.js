@@ -30,10 +30,6 @@ function startLockEffect() {
   fxTimer = setTimeout(() => {
     hushFx.set("wind");
     fxEl.classList.add("on");
-    // the 0.6s canvas fade brings the farm fully on — the LOCKING
-    // choreography is now complete, so the lock's own AHK hooks take
-    // over (the session hooks die with this call; the shell swaps them)
-    setTimeout(() => invoke("hook_lock_on").catch(() => {}), 600);
   }, FX_LATE_MS);
 }
 

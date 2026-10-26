@@ -609,13 +609,6 @@ pub unsafe fn wingroup_prune_locked(app: &AppHandle, s: &mut Shared) {
     crate::util::log("wingroup: rows pruned (windows closed)");
 }
 
-/// Locking wrapper for the prune (task-menu paths that don't hold the lock).
-pub fn wingroup_refresh(app: &AppHandle) {
-    let st = app.state::<crate::AppShared>();
-    let mut s = crate::util::lock_shared(&st.0);
-    unsafe { wingroup_prune_locked(app, &mut s) };
-}
-
 const TRAYFLY_CELL_CSS: f64 = 54.0;
 const TRAYFLY_GAP_CSS: f64 = 6.0;
 const TRAYFLY_PAD_CSS: f64 = 12.0;
@@ -1136,8 +1129,6 @@ pub fn volfly_show(app: &AppHandle, bar_h: isize, anchor_css: f64) {
         // Payload ride-along on the show event: the webview renders from
         // this the moment it opens; the 600ms pull is only the healer.
         let _ = a.emit_to("volfly", "volfly:state", &state);
-        let _ = a.emit_to("volfly", "volfly:show", ());
-        emit_to_bars(&a, "volfly:opened", &());
         crate::util::log(&format!(
             "volfly: shown rect=({},{},{},{})",
             rect.0, rect.1, rect.2, rect.3
